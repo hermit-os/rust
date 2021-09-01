@@ -264,7 +264,7 @@ use crate::sys_common::memchr;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::IntoInnerError;
-#[unstable(feature = "bufwriter_into_parts", issue = "80690")]
+#[stable(feature = "bufwriter_into_parts", since = "1.56.0")]
 pub use self::buffered::WriterPanicked;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::{BufReader, BufWriter, LineWriter};
@@ -1150,7 +1150,7 @@ impl<'a> DerefMut for IoSliceMut<'a> {
 
 /// A buffer type used with `Write::write_vectored`.
 ///
-/// It is semantically a wrapper around an `&[u8]`, but is guaranteed to be
+/// It is semantically a wrapper around a `&[u8]`, but is guaranteed to be
 /// ABI compatible with the `iovec` type on Unix platforms and `WSABUF` on
 /// Windows.
 #[stable(feature = "iovec", since = "1.36.0")]

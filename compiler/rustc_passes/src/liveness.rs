@@ -95,7 +95,7 @@ use rustc_hir::{Expr, HirId, HirIdMap, HirIdSet};
 use rustc_index::vec::IndexVec;
 use rustc_middle::hir::map::Map;
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, DefIdTree, RootVariableMinCaptureList, TyCtxt};
+use rustc_middle::ty::{self, DefIdTree, RootVariableMinCaptureList, Ty, TyCtxt};
 use rustc_session::lint;
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
@@ -123,8 +123,8 @@ rustc_index::newtype_index! {
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum LiveNodeKind {
     UpvarNode(Span),
-    ExprNode(Span),
-    VarDefNode(Span),
+    ExprNode(Span, HirId),
+    VarDefNode(Span, HirId),
     ClosureNode,
     ExitNode,
 }
@@ -133,8 +133,8 @@ fn live_node_kind_to_string(lnk: LiveNodeKind, tcx: TyCtxt<'_>) -> String {
     let sm = tcx.sess.source_map();
     match lnk {
         UpvarNode(s) => format!("Upvar node [{}]", sm.span_to_diagnostic_string(s)),
-        ExprNode(s) => format!("Expr node [{}]", sm.span_to_diagnostic_string(s)),
-        VarDefNode(s) => format!("Var def node [{}]", sm.span_to_diagnostic_string(s)),
+        ExprNode(s, _) => format!("Expr node [{}]", sm.span_to_diagnostic_string(s)),
+        VarDefNode(s, _) => format!("Var def node [{}]", sm.span_to_diagnostic_string(s)),
         ClosureNode => "Closure node".to_owned(),
         ExitNode => "Exit node".to_owned(),
     }
@@ -297,7 +297,7 @@ impl IrMaps<'tcx> {
         }
 
         pat.each_binding(|_, hir_id, _, ident| {
-            self.add_live_node_for_node(hir_id, VarDefNode(ident.span));
+            self.add_live_node_for_node(hir_id, VarDefNode(ident.span, hir_id));
             self.add_variable(Local(LocalInfo {
                 id: hir_id,
                 name: ident.name,
@@ -337,8 +337,8 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
             return;
         }
 
-        if let Some(captures) = maps.tcx.typeck(local_def_id).closure_min_captures.get(&def_id) {
-            for &var_hir_id in captures.keys() {
+        if let Some(upvars) = maps.tcx.upvars_mentioned(def_id) {
+            for &var_hir_id in upvars.keys() {
                 let var_name = maps.tcx.hir().name(var_hir_id);
                 maps.add_variable(Upvar(var_hir_id, var_name));
             }
@@ -396,30 +396,23 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
             hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) => {
                 debug!("expr {}: path that leads to {:?}", expr.hir_id, path.res);
                 if let Res::Local(_var_hir_id) = path.res {
-                    self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
+                    self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span, expr.hir_id));
                 }
                 intravisit::walk_expr(self, expr);
             }
             hir::ExprKind::Closure(..) => {
                 // Interesting control flow (for loops can contain labeled
                 // breaks or continues)
-                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
+                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span, expr.hir_id));
 
-                // Make a live_node for each captured variable, with the span
+                // Make a live_node for each mentioned variable, with the span
                 // being the location that the variable is used.  This results
                 // in better error messages than just pointing at the closure
                 // construction site.
                 let mut call_caps = Vec::new();
                 let closure_def_id = self.tcx.hir().local_def_id(expr.hir_id);
-                if let Some(captures) = self
-                    .tcx
-                    .typeck(closure_def_id)
-                    .closure_min_captures
-                    .get(&closure_def_id.to_def_id())
-                {
-                    // If closure_min_captures is Some, upvars_mentioned must also be Some
-                    let upvars = self.tcx.upvars_mentioned(closure_def_id).unwrap();
-                    call_caps.extend(captures.keys().map(|var_id| {
+                if let Some(upvars) = self.tcx.upvars_mentioned(closure_def_id) {
+                    call_caps.extend(upvars.keys().map(|var_id| {
                         let upvar = upvars[var_id];
                         let upvar_ln = self.add_live_node(UpvarNode(upvar.span));
                         CaptureInfo { ln: upvar_ln, var_hid: *var_id }
@@ -429,13 +422,21 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
                 intravisit::walk_expr(self, expr);
             }
 
+            hir::ExprKind::Let(ref pat, ..) => {
+                self.add_from_pat(pat);
+                intravisit::walk_expr(self, expr);
+            }
+
             // live nodes required for interesting control flow:
-            hir::ExprKind::If(..) | hir::ExprKind::Match(..) | hir::ExprKind::Loop(..) => {
-                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
+            hir::ExprKind::If(..)
+            | hir::ExprKind::Match(..)
+            | hir::ExprKind::Loop(..)
+            | hir::ExprKind::Yield(..) => {
+                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span, expr.hir_id));
                 intravisit::walk_expr(self, expr);
             }
             hir::ExprKind::Binary(op, ..) if op.node.is_lazy() => {
-                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
+                self.add_live_node_for_node(expr.hir_id, ExprNode(expr.span, expr.hir_id));
                 intravisit::walk_expr(self, expr);
             }
 
@@ -464,7 +465,6 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
             | hir::ExprKind::InlineAsm(..)
             | hir::ExprKind::LlvmInlineAsm(..)
             | hir::ExprKind::Box(..)
-            | hir::ExprKind::Yield(..)
             | hir::ExprKind::Type(..)
             | hir::ExprKind::Err
             | hir::ExprKind::Path(hir::QPath::TypeRelative(..))
@@ -489,7 +489,6 @@ struct Liveness<'a, 'tcx> {
     ir: &'a mut IrMaps<'tcx>,
     typeck_results: &'a ty::TypeckResults<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
-    upvars: Option<&'tcx FxIndexMap<hir::HirId, hir::Upvar>>,
     closure_min_captures: Option<&'tcx RootVariableMinCaptureList<'tcx>>,
     successors: IndexVec<LiveNode, Option<LiveNode>>,
     rwu_table: rwu_table::RWUTable,
@@ -513,7 +512,6 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
     fn new(ir: &'a mut IrMaps<'tcx>, body_owner: LocalDefId) -> Liveness<'a, 'tcx> {
         let typeck_results = ir.tcx.typeck(body_owner);
         let param_env = ir.tcx.param_env(body_owner);
-        let upvars = ir.tcx.upvars_mentioned(body_owner);
         let closure_min_captures = typeck_results.closure_min_captures.get(&body_owner.to_def_id());
         let closure_ln = ir.add_live_node(ClosureNode);
         let exit_ln = ir.add_live_node(ExitNode);
@@ -525,7 +523,6 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             ir,
             typeck_results,
             param_env,
-            upvars,
             closure_min_captures,
             successors: IndexVec::from_elem_n(None, num_live_nodes),
             rwu_table: rwu_table::RWUTable::new(num_live_nodes, num_vars),
@@ -852,9 +849,21 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 })
             }
 
+            hir::ExprKind::Let(ref pat, ref scrutinee, _) => {
+                let succ = self.propagate_through_expr(scrutinee, succ);
+                self.define_bindings_in_pat(pat, succ)
+            }
+
             // Note that labels have been resolved, so we don't need to look
             // at the label ident
             hir::ExprKind::Loop(ref blk, ..) => self.propagate_through_loop(expr, &blk, succ),
+
+            hir::ExprKind::Yield(ref e, ..) => {
+                let yield_ln = self.live_node(expr.hir_id, expr.span);
+                self.init_from_succ(yield_ln, succ);
+                self.merge_from_succ(yield_ln, self.exit_ln);
+                self.propagate_through_expr(e, yield_ln)
+            }
 
             hir::ExprKind::If(ref cond, ref then, ref else_opt) => {
                 //
@@ -982,32 +991,13 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             }
 
             hir::ExprKind::Call(ref f, ref args) => {
-                let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
-                let succ = if self.ir.tcx.is_ty_uninhabited_from(
-                    m,
-                    self.typeck_results.expr_ty(expr),
-                    self.param_env,
-                ) {
-                    self.exit_ln
-                } else {
-                    succ
-                };
+                let succ = self.check_is_ty_uninhabited(expr, succ);
                 let succ = self.propagate_through_exprs(args, succ);
                 self.propagate_through_expr(&f, succ)
             }
 
             hir::ExprKind::MethodCall(.., ref args, _) => {
-                let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
-                let succ = if self.ir.tcx.is_ty_uninhabited_from(
-                    m,
-                    self.typeck_results.expr_ty(expr),
-                    self.param_env,
-                ) {
-                    self.exit_ln
-                } else {
-                    succ
-                };
-
+                let succ = self.check_is_ty_uninhabited(expr, succ);
                 self.propagate_through_exprs(args, succ)
             }
 
@@ -1034,7 +1024,6 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             | hir::ExprKind::Type(ref e, _)
             | hir::ExprKind::DropTemps(ref e)
             | hir::ExprKind::Unary(_, ref e)
-            | hir::ExprKind::Yield(ref e, _)
             | hir::ExprKind::Repeat(ref e, _) => self.propagate_through_expr(&e, succ),
 
             hir::ExprKind::InlineAsm(ref asm) => {
@@ -1224,21 +1213,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
         acc: u32,
     ) -> LiveNode {
         match path.res {
-            Res::Local(hid) => {
-                let in_upvars = self.upvars.map_or(false, |u| u.contains_key(&hid));
-                let in_captures = self.closure_min_captures.map_or(false, |c| c.contains_key(&hid));
-
-                match (in_upvars, in_captures) {
-                    (false, _) | (true, true) => self.access_var(hir_id, hid, succ, acc, path.span),
-                    (true, false) => {
-                        // This case is possible when with RFC-2229, a wild pattern
-                        // is used within a closure.
-                        // eg: `let _ = x`. The closure doesn't capture x here,
-                        // even though it's mentioned in the closure.
-                        succ
-                    }
-                }
-            }
+            Res::Local(hid) => self.access_var(hir_id, hid, succ, acc, path.span),
             _ => succ,
         }
     }
@@ -1279,6 +1254,66 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 
         ln
     }
+
+    fn check_is_ty_uninhabited(&mut self, expr: &Expr<'_>, succ: LiveNode) -> LiveNode {
+        let ty = self.typeck_results.expr_ty(expr);
+        let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
+        if self.ir.tcx.is_ty_uninhabited_from(m, ty, self.param_env) {
+            match self.ir.lnks[succ] {
+                LiveNodeKind::ExprNode(succ_span, succ_id) => {
+                    self.warn_about_unreachable(expr.span, ty, succ_span, succ_id, "expression");
+                }
+                LiveNodeKind::VarDefNode(succ_span, succ_id) => {
+                    self.warn_about_unreachable(expr.span, ty, succ_span, succ_id, "definition");
+                }
+                _ => {}
+            };
+            self.exit_ln
+        } else {
+            succ
+        }
+    }
+
+    fn warn_about_unreachable(
+        &mut self,
+        orig_span: Span,
+        orig_ty: Ty<'tcx>,
+        expr_span: Span,
+        expr_id: HirId,
+        descr: &str,
+    ) {
+        if !orig_ty.is_never() {
+            // Unreachable code warnings are already emitted during type checking.
+            // However, during type checking, full type information is being
+            // calculated but not yet available, so the check for diverging
+            // expressions due to uninhabited result types is pretty crude and
+            // only checks whether ty.is_never(). Here, we have full type
+            // information available and can issue warnings for less obviously
+            // uninhabited types (e.g. empty enums). The check above is used so
+            // that we do not emit the same warning twice if the uninhabited type
+            // is indeed `!`.
+
+            self.ir.tcx.struct_span_lint_hir(
+                lint::builtin::UNREACHABLE_CODE,
+                expr_id,
+                expr_span,
+                |lint| {
+                    let msg = format!("unreachable {}", descr);
+                    lint.build(&msg)
+                        .span_label(expr_span, &msg)
+                        .span_label(orig_span, "any code following this expression is unreachable")
+                        .span_note(
+                            orig_span,
+                            &format!(
+                                "this expression has type `{}`, which is uninhabited",
+                                orig_ty
+                            ),
+                        )
+                        .emit();
+                },
+            );
+        }
+    }
 }
 
 // _______________________________________________________________________
@@ -1303,6 +1338,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Liveness<'a, 'tcx> {
 
     fn visit_expr(&mut self, ex: &'tcx Expr<'tcx>) {
         check_expr(self, ex);
+        intravisit::walk_expr(self, ex);
     }
 
     fn visit_arm(&mut self, arm: &'tcx hir::Arm<'tcx>) {
@@ -1358,6 +1394,10 @@ fn check_expr<'tcx>(this: &mut Liveness<'_, 'tcx>, expr: &'tcx Expr<'tcx>) {
             }
         }
 
+        hir::ExprKind::Let(ref pat, ..) => {
+            this.check_unused_vars_in_pat(pat, None, |_, _, _, _| {});
+        }
+
         // no correctness conditions related to liveness
         hir::ExprKind::Call(..)
         | hir::ExprKind::MethodCall(..)
@@ -1388,8 +1428,6 @@ fn check_expr<'tcx>(this: &mut Liveness<'_, 'tcx>, expr: &'tcx Expr<'tcx>) {
         | hir::ExprKind::Type(..)
         | hir::ExprKind::Err => {}
     }
-
-    intravisit::walk_expr(this, expr);
 }
 
 impl<'tcx> Liveness<'_, 'tcx> {

@@ -23,11 +23,11 @@ hashbrown = { version = "0.11", default-features = false, features = ['rustc-dep
 std_detect = { path = "../stdarch/crates/std_detect", default-features = false, features = ['rustc-dep-of-std'] }
 
 # Dependencies of the `backtrace` crate
-addr2line = { version = "0.14.0", optional = true, default-features = false }
-rustc-demangle = { version = "0.1.18", features = ['rustc-dep-of-std'] }
+addr2line = { version = "0.16.0", optional = true, default-features = false }
+rustc-demangle = { version = "0.1.21", features = ['rustc-dep-of-std'] }
 miniz_oxide = { version = "0.4.0", optional = true, default-features = false }
 [dependencies.object]
-version = "0.22"
+version = "0.26.1"
 optional = true
 default-features = false
 features = ['read_core', 'elf', 'macho', 'pe', 'unaligned', 'archive']
@@ -42,7 +42,7 @@ dlmalloc = { version = "0.2.1", features = ['rustc-dep-of-std'] }
 fortanix-sgx-abi = { version = "0.3.2", features = ['rustc-dep-of-std'] }
 
 [target.'cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), target_os = "hermit"))'.dependencies]
-hermit-abi = { version = "0.1.17", features = ['rustc-dep-of-std'] }
+hermit-abi = { version = "0.1.19", features = ['rustc-dep-of-std'] }
 
 [target.wasm32-wasi.dependencies]
 wasi = { version = "0.9.0", features = ['rustc-dep-of-std'], default-features = false }

@@ -2,9 +2,10 @@
 
 #![feature(array_windows)]
 #![feature(crate_visibility_modifier)]
+#![feature(if_let_guard)]
 #![cfg_attr(bootstrap, feature(bindings_after_at))]
-#![feature(box_syntax)]
 #![feature(box_patterns)]
+#![cfg_attr(bootstrap, allow(incomplete_features))] // if_let_guard
 #![recursion_limit = "256"]
 
 use rustc_ast as ast;
@@ -14,9 +15,10 @@ use rustc_ast::tokenstream::{AttrAnnotatedTokenStream, AttrAnnotatedTokenTree};
 use rustc_ast::tokenstream::{Spacing, TokenStream};
 use rustc_ast::AstLike;
 use rustc_ast::Attribute;
+use rustc_ast::{AttrItem, MetaItem};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::sync::Lrc;
-use rustc_errors::{Diagnostic, FatalError, Level, PResult};
+use rustc_errors::{Applicability, Diagnostic, FatalError, Level, PResult};
 use rustc_session::parse::ParseSess;
 use rustc_span::{FileName, SourceFile, Span};
 
@@ -262,20 +264,17 @@ pub fn nt_to_tokenstream(
     let tokens = match *nt {
         Nonterminal::NtItem(ref item) => prepend_attrs(&item.attrs, item.tokens.as_ref()),
         Nonterminal::NtBlock(ref block) => convert_tokens(block.tokens.as_ref()),
-        Nonterminal::NtStmt(ref stmt) => {
-            if let ast::StmtKind::Empty = stmt.kind {
-                let tokens = AttrAnnotatedTokenStream::new(vec![(
-                    tokenstream::AttrAnnotatedTokenTree::Token(Token::new(
-                        TokenKind::Semi,
-                        stmt.span,
-                    )),
-                    Spacing::Alone,
-                )]);
-                prepend_attrs(&stmt.attrs(), Some(&LazyTokenStream::new(tokens)))
-            } else {
-                prepend_attrs(&stmt.attrs(), stmt.tokens())
-            }
+        Nonterminal::NtStmt(ref stmt) if let ast::StmtKind::Empty = stmt.kind => {
+            let tokens = AttrAnnotatedTokenStream::new(vec![(
+                tokenstream::AttrAnnotatedTokenTree::Token(Token::new(
+                    TokenKind::Semi,
+                    stmt.span,
+                )),
+                Spacing::Alone,
+            )]);
+            prepend_attrs(&stmt.attrs(), Some(&LazyTokenStream::new(tokens)))
         }
+        Nonterminal::NtStmt(ref stmt) => prepend_attrs(&stmt.attrs(), stmt.tokens()),
         Nonterminal::NtPat(ref pat) => convert_tokens(pat.tokens.as_ref()),
         Nonterminal::NtTy(ref ty) => convert_tokens(ty.tokens.as_ref()),
         Nonterminal::NtIdent(ident, is_raw) => {
@@ -324,4 +323,45 @@ pub fn fake_token_stream(sess: &ParseSess, nt: &Nonterminal) -> TokenStream {
     let source = pprust::nonterminal_to_string(nt);
     let filename = FileName::macro_expansion_source_code(&source);
     parse_stream_from_source_str(filename, source, sess, Some(nt.span()))
+}
+
+pub fn parse_cfg_attr(
+    attr: &Attribute,
+    parse_sess: &ParseSess,
+) -> Option<(MetaItem, Vec<(AttrItem, Span)>)> {
+    match attr.get_normal_item().args {
+        ast::MacArgs::Delimited(dspan, delim, ref tts) if !tts.is_empty() => {
+            let msg = "wrong `cfg_attr` delimiters";
+            crate::validate_attr::check_meta_bad_delim(parse_sess, dspan, delim, msg);
+            match parse_in(parse_sess, tts.clone(), "`cfg_attr` input", |p| p.parse_cfg_attr()) {
+                Ok(r) => return Some(r),
+                Err(mut e) => {
+                    e.help(&format!("the valid syntax is `{}`", CFG_ATTR_GRAMMAR_HELP))
+                        .note(CFG_ATTR_NOTE_REF)
+                        .emit();
+                }
+            }
+        }
+        _ => error_malformed_cfg_attr_missing(attr.span, parse_sess),
+    }
+    None
+}
+
+const CFG_ATTR_GRAMMAR_HELP: &str = "#[cfg_attr(condition, attribute, other_attribute, ...)]";
+const CFG_ATTR_NOTE_REF: &str = "for more information, visit \
+    <https://doc.rust-lang.org/reference/conditional-compilation.html\
+    #the-cfg_attr-attribute>";
+
+fn error_malformed_cfg_attr_missing(span: Span, parse_sess: &ParseSess) {
+    parse_sess
+        .span_diagnostic
+        .struct_span_err(span, "malformed `cfg_attr` attribute input")
+        .span_suggestion(
+            span,
+            "missing condition and attribute",
+            CFG_ATTR_GRAMMAR_HELP.to_string(),
+            Applicability::HasPlaceholders,
+        )
+        .note(CFG_ATTR_NOTE_REF)
+        .emit();
 }

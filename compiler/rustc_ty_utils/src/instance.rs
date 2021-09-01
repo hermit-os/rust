@@ -54,6 +54,10 @@ impl<'tcx> BoundVarsCollector<'tcx> {
 impl<'tcx> TypeVisitor<'tcx> for BoundVarsCollector<'tcx> {
     type BreakTy = ();
 
+    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+        // Anon const substs do not contain bound vars by default.
+        None
+    }
     fn visit_binder<T: TypeFoldable<'tcx>>(
         &mut self,
         t: &Binder<'tcx, T>,
@@ -381,7 +385,8 @@ fn resolve_associated_item<'tcx>(
         | traits::ImplSource::Param(..)
         | traits::ImplSource::TraitAlias(..)
         | traits::ImplSource::DiscriminantKind(..)
-        | traits::ImplSource::Pointee(..) => None,
+        | traits::ImplSource::Pointee(..)
+        | traits::ImplSource::TraitUpcasting(_) => None,
     })
 }
 

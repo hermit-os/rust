@@ -78,6 +78,7 @@ pub(super) fn check_fn<'a, 'tcx>(
     fn_id: hir::HirId,
     body: &'tcx hir::Body<'tcx>,
     can_be_generator: Option<hir::Movability>,
+    return_type_pre_known: bool,
 ) -> (FnCtxt<'a, 'tcx>, Option<GeneratorTypes<'tcx>>) {
     let mut fn_sig = fn_sig;
 
@@ -87,6 +88,7 @@ pub(super) fn check_fn<'a, 'tcx>(
     // in the case of closures, based on the outer context.
     let mut fcx = FnCtxt::new(inherited, param_env, body.value.hir_id);
     fcx.ps.set(UnsafetyState::function(fn_sig.unsafety, fn_id));
+    fcx.return_type_pre_known = return_type_pre_known;
 
     let tcx = fcx.tcx;
     let sess = tcx.sess;
@@ -468,14 +470,17 @@ pub(super) fn check_opaque_for_inheriting_lifetimes(
     debug!(?item, ?span);
 
     struct FoundParentLifetime;
-    struct FindParentLifetimeVisitor<'tcx>(&'tcx ty::Generics);
+    struct FindParentLifetimeVisitor<'tcx>(TyCtxt<'tcx>, &'tcx ty::Generics);
     impl<'tcx> ty::fold::TypeVisitor<'tcx> for FindParentLifetimeVisitor<'tcx> {
         type BreakTy = FoundParentLifetime;
+        fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+            Some(self.0)
+        }
 
         fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
             debug!("FindParentLifetimeVisitor: r={:?}", r);
             if let RegionKind::ReEarlyBound(ty::EarlyBoundRegion { index, .. }) = r {
-                if *index < self.0.parent_count as u32 {
+                if *index < self.1.parent_count as u32 {
                     return ControlFlow::Break(FoundParentLifetime);
                 } else {
                     return ControlFlow::CONTINUE;
@@ -497,21 +502,24 @@ pub(super) fn check_opaque_for_inheriting_lifetimes(
     }
 
     struct ProhibitOpaqueVisitor<'tcx> {
+        tcx: TyCtxt<'tcx>,
         opaque_identity_ty: Ty<'tcx>,
         generics: &'tcx ty::Generics,
-        tcx: TyCtxt<'tcx>,
         selftys: Vec<(Span, Option<String>)>,
     }
 
     impl<'tcx> ty::fold::TypeVisitor<'tcx> for ProhibitOpaqueVisitor<'tcx> {
         type BreakTy = Ty<'tcx>;
+        fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+            Some(self.tcx)
+        }
 
         fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
             debug!("check_opaque_for_inheriting_lifetimes: (visit_ty) t={:?}", t);
             if t == self.opaque_identity_ty {
                 ControlFlow::CONTINUE
             } else {
-                t.super_visit_with(&mut FindParentLifetimeVisitor(self.generics))
+                t.super_visit_with(&mut FindParentLifetimeVisitor(self.tcx, self.generics))
                     .map_break(|FoundParentLifetime| t)
             }
         }
@@ -1383,7 +1391,7 @@ fn check_enum<'tcx>(
         }
     }
 
-    if tcx.adt_def(def_id).repr.int.is_none() && tcx.features().arbitrary_enum_discriminant {
+    if tcx.adt_def(def_id).repr.int.is_none() {
         let is_unit = |var: &hir::Variant<'_>| matches!(var.data, hir::VariantData::Unit(..));
 
         let has_disr = |var: &hir::Variant<'_>| var.disr_expr.is_some();
@@ -1413,15 +1421,17 @@ fn check_enum<'tcx>(
                 Some(ref expr) => tcx.hir().span(expr.hir_id),
                 None => v.span,
             };
+            let display_discr = display_discriminant_value(tcx, v, discr.val);
+            let display_discr_i = display_discriminant_value(tcx, variant_i, disr_vals[i].val);
             struct_span_err!(
                 tcx.sess,
                 span,
                 E0081,
                 "discriminant value `{}` already exists",
-                disr_vals[i]
+                discr.val,
             )
-            .span_label(i_span, format!("first use of `{}`", disr_vals[i]))
-            .span_label(span, format!("enum already has `{}`", disr_vals[i]))
+            .span_label(i_span, format!("first use of {}", display_discr_i))
+            .span_label(span, format!("enum already has {}", display_discr))
             .emit();
         }
         disr_vals.push(discr);
@@ -1429,6 +1439,25 @@ fn check_enum<'tcx>(
 
     check_representable(tcx, sp, def_id);
     check_transparent(tcx, sp, def);
+}
+
+/// Format an enum discriminant value for use in a diagnostic message.
+fn display_discriminant_value<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    variant: &hir::Variant<'_>,
+    evaluated: u128,
+) -> String {
+    if let Some(expr) = &variant.disr_expr {
+        let body = &tcx.hir().body(expr.body).value;
+        if let hir::ExprKind::Lit(lit) = &body.kind {
+            if let rustc_ast::LitKind::Int(lit_value, _int_kind) = &lit.node {
+                if evaluated != *lit_value {
+                    return format!("`{}` (overflowed from `{}`)", evaluated, lit_value);
+                }
+            }
+        }
+    }
+    format!("`{}`", evaluated)
 }
 
 pub(super) fn check_type_params_are_used<'tcx>(
@@ -1453,7 +1482,7 @@ pub(super) fn check_type_params_are_used<'tcx>(
         return;
     }
 
-    for leaf in ty.walk() {
+    for leaf in ty.walk(tcx) {
         if let GenericArgKind::Type(leaf_ty) = leaf.unpack() {
             if let ty::Param(param) = leaf_ty.kind() {
                 debug!("found use of ty param {:?}", param);
@@ -1555,8 +1584,12 @@ fn opaque_type_cycle_error(tcx: TyCtxt<'tcx>, def_id: LocalDefId, span: Span) {
                 .filter_map(|e| typeck_results.node_type_opt(e.hir_id).map(|t| (e.span, t)))
                 .filter(|(_, ty)| !matches!(ty.kind(), ty::Never))
             {
-                struct VisitTypes(Vec<DefId>);
-                impl<'tcx> ty::fold::TypeVisitor<'tcx> for VisitTypes {
+                struct OpaqueTypeCollector(Vec<DefId>);
+                impl<'tcx> ty::fold::TypeVisitor<'tcx> for OpaqueTypeCollector {
+                    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+                        // Default anon const substs cannot contain opaque types.
+                        None
+                    }
                     fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
                         match *t.kind() {
                             ty::Opaque(def, _) => {
@@ -1567,7 +1600,7 @@ fn opaque_type_cycle_error(tcx: TyCtxt<'tcx>, def_id: LocalDefId, span: Span) {
                         }
                     }
                 }
-                let mut visitor = VisitTypes(vec![]);
+                let mut visitor = OpaqueTypeCollector(vec![]);
                 ty.visit_with(&mut visitor);
                 for def_id in visitor.0 {
                     let ty_span = tcx.def_span(def_id);

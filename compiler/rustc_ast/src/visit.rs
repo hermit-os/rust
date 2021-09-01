@@ -19,20 +19,20 @@ use crate::token;
 use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::Span;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum AssocCtxt {
     Trait,
     Impl,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FnCtxt {
     Free,
     Foreign,
     Assoc(AssocCtxt),
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum FnKind<'a> {
     /// E.g., `fn foo()`, `fn foo(&self)`, or `extern "Abi" fn foo()`.
     Fn(FnCtxt, Ident, &'a FnSig, &'a Visibility, Option<&'a Block>),
@@ -242,7 +242,10 @@ pub fn walk_local<'a, V: Visitor<'a>>(visitor: &mut V, local: &'a Local) {
     }
     visitor.visit_pat(&local.pat);
     walk_list!(visitor, visit_ty, &local.ty);
-    walk_list!(visitor, visit_expr, &local.init);
+    if let Some((init, els)) = local.kind.init_else_opt() {
+        visitor.visit_expr(init);
+        walk_list!(visitor, visit_block, els);
+    }
 }
 
 pub fn walk_label<'a, V: Visitor<'a>>(visitor: &mut V, label: &'a Label) {
@@ -714,13 +717,10 @@ fn walk_inline_asm<'a, V: Visitor<'a>>(visitor: &mut V, asm: &'a InlineAsm) {
     for (op, _) in &asm.operands {
         match op {
             InlineAsmOperand::In { expr, .. }
+            | InlineAsmOperand::Out { expr: Some(expr), .. }
             | InlineAsmOperand::InOut { expr, .. }
             | InlineAsmOperand::Sym { expr, .. } => visitor.visit_expr(expr),
-            InlineAsmOperand::Out { expr, .. } => {
-                if let Some(expr) = expr {
-                    visitor.visit_expr(expr);
-                }
-            }
+            InlineAsmOperand::Out { expr: None, .. } => {}
             InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
                 visitor.visit_expr(in_expr);
                 if let Some(out_expr) = out_expr {
@@ -779,9 +779,9 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
         }
-        ExprKind::Let(ref pat, ref scrutinee) => {
+        ExprKind::Let(ref pat, ref expr, _) => {
             visitor.visit_pat(pat);
-            visitor.visit_expr(scrutinee);
+            visitor.visit_expr(expr);
         }
         ExprKind::If(ref head_expression, ref if_block, ref optional_else) => {
             visitor.visit_expr(head_expression);

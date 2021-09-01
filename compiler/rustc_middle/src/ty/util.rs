@@ -225,13 +225,11 @@ impl<'tcx> TyCtxt<'tcx> {
                     }
                 }
 
-                ty::Tuple(tys) => {
-                    if let Some((&last_ty, _)) = tys.split_last() {
-                        ty = last_ty.expect_ty();
-                    } else {
-                        break;
-                    }
+                ty::Tuple(tys) if let Some((&last_ty, _)) = tys.split_last() => {
+                    ty = last_ty.expect_ty();
                 }
+
+                ty::Tuple(_) => break,
 
                 ty::Projection(_) | ty::Opaque(..) => {
                     let normalized = normalize(ty);
@@ -681,7 +679,7 @@ impl<'tcx> ty::TyS<'tcx> {
     }
 
     /// Checks whether values of this type `T` implement the `Freeze`
-    /// trait -- frozen types are those that do not contain a
+    /// trait -- frozen types are those that do not contain an
     /// `UnsafeCell` anywhere. This is a language concept used to
     /// distinguish "true immutability", which is relevant to
     /// optimization as well as the rules around static values. Note

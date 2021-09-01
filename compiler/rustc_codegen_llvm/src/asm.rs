@@ -302,11 +302,19 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                         "~{flags}".to_string(),
                     ]);
                 }
-                InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {}
+                InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {
+                    constraints.extend_from_slice(&[
+                        "~{vtype}".to_string(),
+                        "~{vl}".to_string(),
+                        "~{vxsat}".to_string(),
+                        "~{vxrm}".to_string(),
+                    ]);
+                }
                 InlineAsmArch::Nvptx64 => {}
                 InlineAsmArch::PowerPC | InlineAsmArch::PowerPC64 => {}
                 InlineAsmArch::Hexagon => {}
                 InlineAsmArch::Mips | InlineAsmArch::Mips64 => {}
+                InlineAsmArch::S390x => {}
                 InlineAsmArch::SpirV => {}
                 InlineAsmArch::Wasm32 => {}
                 InlineAsmArch::Bpf => {}
@@ -626,6 +634,8 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => "r",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => "r",
             InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => "w",
+            InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg) => "r",
+            InlineAsmRegClass::S390x(S390xInlineAsmRegClass::freg) => "f",
             InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
                 bug!("LLVM backend does not support SPIR-V")
             }
@@ -704,6 +714,7 @@ fn modifier_to_llvm(
         }
         InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => None,
         InlineAsmRegClass::Bpf(_) => None,
+        InlineAsmRegClass::S390x(_) => None,
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }
@@ -762,6 +773,8 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         InlineAsmRegClass::Wasm(WasmInlineAsmRegClass::local) => cx.type_i32(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::reg) => cx.type_i64(),
         InlineAsmRegClass::Bpf(BpfInlineAsmRegClass::wreg) => cx.type_i32(),
+        InlineAsmRegClass::S390x(S390xInlineAsmRegClass::reg) => cx.type_i32(),
+        InlineAsmRegClass::S390x(S390xInlineAsmRegClass::freg) => cx.type_f64(),
         InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
             bug!("LLVM backend does not support SPIR-V")
         }

@@ -12,7 +12,7 @@ rustc_graphviz = { path = "../rustc_graphviz" }
 gsgdt = "0.1.2"
 itertools = "0.9"
 tracing = "0.1"
-polonius-engine = "0.12.0"
+polonius-engine = "0.13.0"
 regex = "1"
 rustc_middle = { path = "../rustc_middle" }
 rustc_attr = { path = "../rustc_attr" }
@@ -27,6 +27,7 @@ rustc_serialize = { path = "../rustc_serialize" }
 rustc_session = { path = "../rustc_session" }
 rustc_target = { path = "../rustc_target" }
 rustc_trait_selection = { path = "../rustc_trait_selection" }
+rustc_traits = { path = "../rustc_traits" }
 rustc_ast = { path = "../rustc_ast" }
 rustc_span = { path = "../rustc_span" }
 rustc_apfloat = { path = "../rustc_apfloat" }

@@ -10,6 +10,7 @@ use rustc_target::spec::{RelocModel, RelroLevel, SplitDebuginfo, TargetTriple, T
 
 use rustc_feature::UnstableFeatures;
 use rustc_span::edition::Edition;
+use rustc_span::RealFileName;
 use rustc_span::SourceFileHashAlgorithm;
 
 use std::collections::BTreeMap;
@@ -203,6 +204,9 @@ top_level_options!(
         json_unused_externs: bool [UNTRACKED],
 
         pretty: Option<PpMode> [UNTRACKED],
+
+        /// The (potentially remapped) working directory
+        working_dir: RealFileName [TRACKED],
     }
 );
 
@@ -1182,6 +1186,9 @@ options! {
         "support compiling tests with panic=abort (default: no)"),
     parse_only: bool = (false, parse_bool, [UNTRACKED],
         "parse only; do not compile, assemble, or link (default: no)"),
+    partially_uninit_const_threshold: Option<usize> = (None, parse_opt_number, [TRACKED],
+        "allow generating const initializers with mixed init/uninit bytes, \
+        and set the maximum total size of a const allocation for which this is allowed (default: never)"),
     perf_stats: bool = (false, parse_bool, [UNTRACKED],
         "print some performance-related statistics (default: no)"),
     plt: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -1283,7 +1290,7 @@ options! {
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
     thir_unsafeck: bool = (false, parse_bool, [TRACKED],
-        "use the work-in-progress THIR unsafety checker. NOTE: this is unsound (default: no)"),
+        "use the THIR unsafety checker (default: no)"),
     /// We default to 1 here since we want to behave like
     /// a sequential compiler for now. This'll likely be adjusted
     /// in the future. Note that -Zthreads=0 is the way to get

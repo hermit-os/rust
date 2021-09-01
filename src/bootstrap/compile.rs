@@ -23,7 +23,7 @@ use serde::Deserialize;
 use crate::builder::Cargo;
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
-use crate::config::TargetSelection;
+use crate::config::{LlvmLibunwind, TargetSelection};
 use crate::dist;
 use crate::native;
 use crate::tool::SourceType;
@@ -232,6 +232,18 @@ fn copy_self_contained_objects(
             builder.copy(&src, &target);
             target_deps.push((target, DependencyType::TargetSelfContained));
         }
+    }
+
+    if target.contains("musl")
+        || target.contains("x86_64-fortanix-unknown-sgx")
+        || builder.config.llvm_libunwind == LlvmLibunwind::InTree
+            && (target.contains("linux") || target.contains("fuchsia"))
+    {
+        let libunwind_path = builder.ensure(native::Libunwind { target });
+        let libunwind_source = libunwind_path.join("libunwind.a");
+        let libunwind_target = libdir_self_contained.join("libunwind.a");
+        builder.copy(&libunwind_source, &libunwind_target);
+        target_deps.push((libunwind_target, DependencyType::TargetSelfContained));
     }
 
     target_deps
@@ -806,6 +818,10 @@ impl Step for CodegenBackend {
 
         let tmp_stamp = out_dir.join(".tmp.stamp");
 
+        builder.info(&format!(
+            "Building stage{} codegen backend {} ({} -> {})",
+            compiler.stage, backend, &compiler.host, target
+        ));
         let files = run_cargo(builder, cargo, vec![], &tmp_stamp, vec![], false);
         if builder.config.dry_run {
             return;
@@ -1116,6 +1132,10 @@ impl Step for Assemble {
             builder.copy(
                 &lld_install.join("bin").join(&src_exe),
                 &gcc_ld_dir.join(exe("ld", target_compiler.host)),
+            );
+            builder.copy(
+                &lld_install.join("bin").join(&src_exe),
+                &gcc_ld_dir.join(exe("ld64", target_compiler.host)),
             );
         }
 

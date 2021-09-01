@@ -188,8 +188,7 @@ impl<'a> MutVisitor for EntryPointCleaner<'a> {
                     let attrs = attrs
                         .into_iter()
                         .filter(|attr| {
-                            !self.sess.check_name(attr, sym::rustc_main)
-                                && !self.sess.check_name(attr, sym::start)
+                            !attr.has_name(sym::rustc_main) && !attr.has_name(sym::start)
                         })
                         .chain(iter::once(allow_dead_code))
                         .collect();
@@ -315,8 +314,12 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     let decl = ecx.fn_decl(vec![], ast::FnRetTy::Ty(main_ret_ty));
     let sig = ast::FnSig { decl, header: ast::FnHeader::default(), span: sp };
     let def = ast::Defaultness::Final;
-    let main =
-        ast::ItemKind::Fn(box ast::FnKind(def, sig, ast::Generics::default(), Some(main_body)));
+    let main = ast::ItemKind::Fn(Box::new(ast::FnKind(
+        def,
+        sig,
+        ast::Generics::default(),
+        Some(main_body),
+    )));
 
     // Honor the reexport_test_harness_main attribute
     let main_id = match cx.reexport_test_harness_main {

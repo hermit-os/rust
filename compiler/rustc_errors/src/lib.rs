@@ -5,9 +5,11 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(crate_visibility_modifier)]
 #![feature(backtrace)]
+#![feature(if_let_guard)]
 #![feature(format_args_capture)]
 #![feature(iter_zip)]
 #![feature(nll)]
+#![cfg_attr(bootstrap, allow(incomplete_features))] // if_let_guard
 
 #[macro_use]
 extern crate rustc_macros;
@@ -283,6 +285,9 @@ impl CodeSuggestion {
                 let mut buf = String::new();
 
                 let mut line_highlight = vec![];
+                // We need to keep track of the difference between the existing code and the added
+                // or deleted code in order to point at the correct column *after* substitution.
+                let mut acc = 0;
                 for part in &substitution.parts {
                     let cur_lo = sm.lookup_char_pos(part.span.lo());
                     if prev_hi.line == cur_lo.line {
@@ -290,9 +295,11 @@ impl CodeSuggestion {
                             push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, Some(&cur_lo));
                         while count > 0 {
                             highlights.push(std::mem::take(&mut line_highlight));
+                            acc = 0;
                             count -= 1;
                         }
                     } else {
+                        acc = 0;
                         highlights.push(std::mem::take(&mut line_highlight));
                         let mut count = push_trailing(&mut buf, prev_line.as_ref(), &prev_hi, None);
                         while count > 0 {
@@ -316,18 +323,43 @@ impl CodeSuggestion {
                         }
                     }
                     // Add a whole line highlight per line in the snippet.
+                    let len: isize = part
+                        .snippet
+                        .split('\n')
+                        .next()
+                        .unwrap_or(&part.snippet)
+                        .chars()
+                        .map(|c| match c {
+                            '\t' => 4,
+                            _ => 1,
+                        })
+                        .sum();
                     line_highlight.push(SubstitutionHighlight {
-                        start: cur_lo.col.0,
-                        end: cur_lo.col.0
-                            + part.snippet.split('\n').next().unwrap_or(&part.snippet).len(),
+                        start: (cur_lo.col.0 as isize + acc) as usize,
+                        end: (cur_lo.col.0 as isize + acc + len) as usize,
                     });
-                    for line in part.snippet.split('\n').skip(1) {
-                        highlights.push(std::mem::take(&mut line_highlight));
-                        line_highlight.push(SubstitutionHighlight { start: 0, end: line.len() });
-                    }
                     buf.push_str(&part.snippet);
-                    prev_hi = sm.lookup_char_pos(part.span.hi());
+                    let cur_hi = sm.lookup_char_pos(part.span.hi());
+                    if prev_hi.line == cur_lo.line {
+                        // Account for the difference between the width of the current code and the
+                        // snippet being suggested, so that the *later* suggestions are correctly
+                        // aligned on the screen.
+                        acc += len as isize - (cur_hi.col.0 - cur_lo.col.0) as isize;
+                    }
+                    prev_hi = cur_hi;
                     prev_line = sf.get_line(prev_hi.line - 1);
+                    for line in part.snippet.split('\n').skip(1) {
+                        acc = 0;
+                        highlights.push(std::mem::take(&mut line_highlight));
+                        let end: usize = line
+                            .chars()
+                            .map(|c| match c {
+                                '\t' => 4,
+                                _ => 1,
+                            })
+                            .sum();
+                        line_highlight.push(SubstitutionHighlight { start: 0, end });
+                    }
                 }
                 highlights.push(std::mem::take(&mut line_highlight));
                 let only_capitalization = is_case_difference(sm, &buf, bounding_span);
@@ -997,15 +1029,15 @@ impl HandlerInner {
             let mut error_codes = self
                 .emitted_diagnostic_codes
                 .iter()
-                .filter_map(|x| match &x {
-                    DiagnosticId::Error(s) => {
-                        if let Ok(Some(_explanation)) = registry.try_find_description(s) {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
+                .filter_map(|x| {
+                    match &x {
+                    DiagnosticId::Error(s)
+                        if let Ok(Some(_explanation)) = registry.try_find_description(s) =>
+                    {
+                        Some(s.clone())
                     }
                     _ => None,
+                }
                 })
                 .collect::<Vec<_>>();
             if !error_codes.is_empty() {

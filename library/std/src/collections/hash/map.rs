@@ -969,7 +969,11 @@ where
     /// map.insert("b", 2);
     /// map.insert("c", 3);
     ///
-    /// let vec: Vec<&str> = map.into_keys().collect();
+    /// let mut vec: Vec<&str> = map.into_keys().collect();
+    /// // The `IntoKeys` iterator produces keys in arbitrary order, so the
+    /// // keys must be sorted to test them against a sorted array.
+    /// vec.sort_unstable();
+    /// assert_eq!(vec, ["a", "b", "c"]);
     /// ```
     #[inline]
     #[stable(feature = "map_into_keys_values", since = "1.54.0")]
@@ -991,7 +995,11 @@ where
     /// map.insert("b", 2);
     /// map.insert("c", 3);
     ///
-    /// let vec: Vec<i32> = map.into_values().collect();
+    /// let mut vec: Vec<i32> = map.into_values().collect();
+    /// // The `IntoValues` iterator produces values in arbitrary order, so
+    /// // the values must be sorted to test them against a sorted array.
+    /// vec.sort_unstable();
+    /// assert_eq!(vec, [1, 2, 3]);
     /// ```
     #[inline]
     #[stable(feature = "map_into_keys_values", since = "1.54.0")]
@@ -1239,7 +1247,7 @@ pub struct IterMut<'a, K: 'a, V: 'a> {
 }
 
 impl<'a, K, V> IterMut<'a, K, V> {
-    /// Returns a iterator of references over the remaining items.
+    /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
         Iter { base: self.base.rustc_iter() }
@@ -1268,7 +1276,7 @@ pub struct IntoIter<K, V> {
 }
 
 impl<K, V> IntoIter<K, V> {
-    /// Returns a iterator of references over the remaining items.
+    /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
         Iter { base: self.base.rustc_iter() }
@@ -1371,7 +1379,7 @@ pub struct Drain<'a, K: 'a, V: 'a> {
 }
 
 impl<'a, K, V> Drain<'a, K, V> {
-    /// Returns a iterator of references over the remaining items.
+    /// Returns an iterator of references over the remaining items.
     #[inline]
     pub(super) fn iter(&self) -> Iter<'_, K, V> {
         Iter { base: self.base.rustc_iter() }

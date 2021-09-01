@@ -8,7 +8,6 @@
 //! https://rustc-dev-guide.rust-lang.org/traits/resolution.html#confirmation
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir::lang_items::LangItem;
-use rustc_hir::Constness;
 use rustc_index::bit_set::GrowableBitSet;
 use rustc_infer::infer::InferOk;
 use rustc_infer::infer::LateBoundRegionConversionTime::HigherRankedType;
@@ -26,12 +25,13 @@ use crate::traits::Normalized;
 use crate::traits::OutputTypeParameterMismatch;
 use crate::traits::Selection;
 use crate::traits::TraitNotObjectSafe;
+use crate::traits::VtblSegment;
 use crate::traits::{BuiltinDerivedObligation, ImplDerivedObligation};
 use crate::traits::{
     ImplSourceAutoImplData, ImplSourceBuiltinData, ImplSourceClosureData,
     ImplSourceDiscriminantKindData, ImplSourceFnPointerData, ImplSourceGeneratorData,
     ImplSourceObjectData, ImplSourcePointeeData, ImplSourceTraitAliasData,
-    ImplSourceUserDefinedData,
+    ImplSourceTraitUpcastingData, ImplSourceUserDefinedData,
 };
 use crate::traits::{ObjectCastObligation, PredicateObligation, TraitObligation};
 use crate::traits::{Obligation, ObligationCause};
@@ -42,6 +42,7 @@ use super::SelectionCandidate::{self, *};
 use super::SelectionContext;
 
 use std::iter;
+use std::ops::ControlFlow;
 
 impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
     #[instrument(level = "debug", skip(self))]
@@ -73,7 +74,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             ProjectionCandidate(idx) => {
                 let obligations = self.confirm_projection_candidate(obligation, idx)?;
                 // FIXME(jschievink): constness
-                Ok(ImplSource::Param(obligations, Constness::NotConst))
+                Ok(ImplSource::Param(obligations, ty::BoundConstness::NotConst))
             }
 
             ObjectCandidate(idx) => {
@@ -111,12 +112,17 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                 // This indicates something like `Trait + Send: Send`. In this case, we know that
                 // this holds because that's what the object type is telling us, and there's really
                 // no additional obligations to prove and no types in particular to unify, etc.
-                Ok(ImplSource::Param(Vec::new(), Constness::NotConst))
+                Ok(ImplSource::Param(Vec::new(), ty::BoundConstness::NotConst))
             }
 
             BuiltinUnsizeCandidate => {
                 let data = self.confirm_builtin_unsize_candidate(obligation)?;
                 Ok(ImplSource::Builtin(data))
+            }
+
+            TraitUpcastingUnsizeCandidate(idx) => {
+                let data = self.confirm_trait_upcasting_unsize_candidate(obligation, idx)?;
+                Ok(ImplSource::TraitUpcasting(data))
             }
         }
     }
@@ -250,7 +256,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         ImplSourceBuiltinData { nested: obligations }
     }
 
-    /// This handles the case where a `auto trait Foo` impl is being used.
+    /// This handles the case where an `auto trait Foo` impl is being used.
     /// The idea is that the impl applies to `X : Foo` if the following conditions are met:
     ///
     /// 1. For each constituent type `Y` in `X`, `Y : Foo` holds
@@ -685,6 +691,114 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             .map_err(|e| OutputTypeParameterMismatch(expected_trait_ref, obligation_trait_ref, e))
     }
 
+    fn confirm_trait_upcasting_unsize_candidate(
+        &mut self,
+        obligation: &TraitObligation<'tcx>,
+        idx: usize,
+    ) -> Result<ImplSourceTraitUpcastingData<'tcx, PredicateObligation<'tcx>>, SelectionError<'tcx>>
+    {
+        let tcx = self.tcx();
+
+        // `assemble_candidates_for_unsizing` should ensure there are no late-bound
+        // regions here. See the comment there for more details.
+        let source = self.infcx.shallow_resolve(obligation.self_ty().no_bound_vars().unwrap());
+        let target = obligation.predicate.skip_binder().trait_ref.substs.type_at(1);
+        let target = self.infcx.shallow_resolve(target);
+
+        debug!(?source, ?target, "confirm_trait_upcasting_unsize_candidate");
+
+        let mut nested = vec![];
+        let source_trait_ref;
+        let upcast_trait_ref;
+        match (source.kind(), target.kind()) {
+            // TraitA+Kx+'a -> TraitB+Ky+'b (trait upcasting coercion).
+            (&ty::Dynamic(ref data_a, r_a), &ty::Dynamic(ref data_b, r_b)) => {
+                // See `assemble_candidates_for_unsizing` for more info.
+                // We already checked the compatiblity of auto traits within `assemble_candidates_for_unsizing`.
+                let principal_a = data_a.principal().unwrap();
+                source_trait_ref = principal_a.with_self_ty(tcx, source);
+                upcast_trait_ref = util::supertraits(tcx, source_trait_ref).nth(idx).unwrap();
+                assert_eq!(data_b.principal_def_id(), Some(upcast_trait_ref.def_id()));
+                let existential_predicate = upcast_trait_ref.map_bound(|trait_ref| {
+                    ty::ExistentialPredicate::Trait(ty::ExistentialTraitRef::erase_self_ty(
+                        tcx, trait_ref,
+                    ))
+                });
+                let iter = Some(existential_predicate)
+                    .into_iter()
+                    .chain(
+                        data_a
+                            .projection_bounds()
+                            .map(|b| b.map_bound(ty::ExistentialPredicate::Projection)),
+                    )
+                    .chain(
+                        data_b
+                            .auto_traits()
+                            .map(ty::ExistentialPredicate::AutoTrait)
+                            .map(ty::Binder::dummy),
+                    );
+                let existential_predicates = tcx.mk_poly_existential_predicates(iter);
+                let source_trait = tcx.mk_dynamic(existential_predicates, r_b);
+
+                // Require that the traits involved in this upcast are **equal**;
+                // only the **lifetime bound** is changed.
+                let InferOk { obligations, .. } = self
+                    .infcx
+                    .at(&obligation.cause, obligation.param_env)
+                    .sup(target, source_trait)
+                    .map_err(|_| Unimplemented)?;
+                nested.extend(obligations);
+
+                // Register one obligation for 'a: 'b.
+                let cause = ObligationCause::new(
+                    obligation.cause.span,
+                    obligation.cause.body_id,
+                    ObjectCastObligation(target),
+                );
+                let outlives = ty::OutlivesPredicate(r_a, r_b);
+                nested.push(Obligation::with_depth(
+                    cause,
+                    obligation.recursion_depth + 1,
+                    obligation.param_env,
+                    obligation.predicate.rebind(outlives).to_predicate(tcx),
+                ));
+            }
+            _ => bug!(),
+        };
+
+        let vtable_segment_callback = {
+            let mut vptr_offset = 0;
+            move |segment| {
+                match segment {
+                    VtblSegment::MetadataDSA => {
+                        vptr_offset += ty::COMMON_VTABLE_ENTRIES.len();
+                    }
+                    VtblSegment::TraitOwnEntries { trait_ref, emit_vptr } => {
+                        vptr_offset += util::count_own_vtable_entries(tcx, trait_ref);
+                        if trait_ref == upcast_trait_ref {
+                            if emit_vptr {
+                                return ControlFlow::Break(Some(vptr_offset));
+                            } else {
+                                return ControlFlow::Break(None);
+                            }
+                        }
+
+                        if emit_vptr {
+                            vptr_offset += 1;
+                        }
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+        };
+
+        let vtable_vptr_slot =
+            super::super::prepare_vtable_segments(tcx, source_trait_ref, vtable_segment_callback)
+                .unwrap();
+
+        Ok(ImplSourceTraitUpcastingData { upcast_trait_ref, vtable_vptr_slot, nested })
+    }
+
     fn confirm_builtin_unsize_candidate(
         &mut self,
         obligation: &TraitObligation<'tcx>,
@@ -701,58 +815,13 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let mut nested = vec![];
         match (source.kind(), target.kind()) {
-            // Trait+Kx+'a -> Trait+Ky+'b (upcasts).
+            // Trait+Kx+'a -> Trait+Ky+'b (auto traits and lifetime subtyping).
             (&ty::Dynamic(ref data_a, r_a), &ty::Dynamic(ref data_b, r_b)) => {
-                // Upcast coercions permit several things:
-                //
-                // 1. Dropping auto traits, e.g., `Foo + Send` to `Foo`
-                // 2. Tightening the region bound, e.g., `Foo + 'a` to `Foo + 'b` if `'a: 'b`
-                // 3. Tightening trait to its super traits, eg. `Foo` to `Bar` if `Foo: Bar`
-                //
-                // Note that neither of the first two of these changes requires any
-                // change at runtime. The third needs to change pointer metadata at runtime.
-                //
-                // We always perform upcasting coercions when we can because of reason
-                // #2 (region bounds).
-
+                // See `assemble_candidates_for_unsizing` for more info.
                 // We already checked the compatiblity of auto traits within `assemble_candidates_for_unsizing`.
-
-                let principal_a = data_a.principal();
-                let principal_def_id_b = data_b.principal_def_id();
-
-                let existential_predicate = if let Some(principal_a) = principal_a {
-                    let source_trait_ref = principal_a.with_self_ty(tcx, source);
-                    let target_trait_did = principal_def_id_b.ok_or_else(|| Unimplemented)?;
-                    let upcast_idx = util::supertraits(tcx, source_trait_ref)
-                        .position(|upcast_trait_ref| upcast_trait_ref.def_id() == target_trait_did)
-                        .ok_or_else(|| Unimplemented)?;
-                    // FIXME(crlf0710): This is less than ideal, for example,
-                    // if the trait is defined as `trait Foo: Bar<u32> + Bar<i32>`,
-                    // the coercion from Box<Foo> to Box<dyn Bar<_>> is actually ambiguous.
-                    // We currently make this coercion fail for now.
-                    //
-                    // see #65991 for more information.
-                    if util::supertraits(tcx, source_trait_ref)
-                        .skip(upcast_idx + 1)
-                        .any(|upcast_trait_ref| upcast_trait_ref.def_id() == target_trait_did)
-                    {
-                        return Err(Unimplemented);
-                    }
-                    let target_trait_ref =
-                        util::supertraits(tcx, source_trait_ref).nth(upcast_idx).unwrap();
-                    let existential_predicate = target_trait_ref.map_bound(|trait_ref| {
-                        ty::ExistentialPredicate::Trait(ty::ExistentialTraitRef::erase_self_ty(
-                            tcx, trait_ref,
-                        ))
-                    });
-                    Some(existential_predicate)
-                } else if principal_def_id_b.is_none() {
-                    None
-                } else {
-                    return Err(Unimplemented);
-                };
-
-                let iter = existential_predicate
+                let iter = data_a
+                    .principal()
+                    .map(|b| b.map_bound(ty::ExistentialPredicate::Trait))
                     .into_iter()
                     .chain(
                         data_a
@@ -877,7 +946,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
                 let mut unsizing_params = GrowableBitSet::new_empty();
                 if tcx.features().relaxed_struct_unsize {
-                    for arg in tail_field_ty.walk() {
+                    for arg in tail_field_ty.walk(tcx) {
                         if let Some(i) = maybe_unsizing_param_idx(arg) {
                             unsizing_params.insert(i);
                         }
@@ -886,7 +955,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     // Ensure none of the other fields mention the parameters used
                     // in unsizing.
                     for field in prefix_fields {
-                        for arg in tcx.type_of(field.did).walk() {
+                        for arg in tcx.type_of(field.did).walk(tcx) {
                             if let Some(i) = maybe_unsizing_param_idx(arg) {
                                 unsizing_params.remove(i);
                             }
@@ -898,7 +967,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     }
                 } else {
                     let mut found = false;
-                    for arg in tail_field_ty.walk() {
+                    for arg in tail_field_ty.walk(tcx) {
                         if let Some(i) = maybe_unsizing_param_idx(arg) {
                             unsizing_params.insert(i);
                             found = true;
@@ -914,7 +983,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
                     // by putting it in a query; it would only need the `DefId` as it
                     // looks at declared field types, not anything substituted.
                     for field in prefix_fields {
-                        for arg in tcx.type_of(field.did).walk() {
+                        for arg in tcx.type_of(field.did).walk(tcx) {
                             if let Some(i) = maybe_unsizing_param_idx(arg) {
                                 if unsizing_params.contains(i) {
                                     return Err(Unimplemented);

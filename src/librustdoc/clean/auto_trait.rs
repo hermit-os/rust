@@ -114,7 +114,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
             attrs: Default::default(),
             visibility: Inherited,
             def_id: ItemId::Auto { trait_: trait_def_id, for_: item_def_id },
-            kind: box ImplItem(Impl {
+            kind: Box::new(ImplItem(Impl {
                 span: Span::dummy(),
                 unsafety: hir::Unsafety::Normal,
                 generics: new_generics,
@@ -124,7 +124,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                 negative_polarity,
                 synthetic: true,
                 blanket_impl: None,
-            }),
+            })),
             cfg: None,
         })
     }
@@ -316,7 +316,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         let bound_predicate = pred.kind();
         let tcx = self.cx.tcx;
         let regions = match bound_predicate.skip_binder() {
-            ty::PredicateKind::Trait(poly_trait_pred, _) => {
+            ty::PredicateKind::Trait(poly_trait_pred) => {
                 tcx.collect_referenced_late_bound_regions(&bound_predicate.rebind(poly_trait_pred))
             }
             ty::PredicateKind::Projection(poly_proj_pred) => {
@@ -463,7 +463,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
             .filter(|p| {
                 !orig_bounds.contains(p)
                     || match p.kind().skip_binder() {
-                        ty::PredicateKind::Trait(pred, _) => pred.def_id() == sized_trait,
+                        ty::PredicateKind::Trait(pred) => pred.def_id() == sized_trait,
                         _ => false,
                     }
             })

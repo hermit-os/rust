@@ -21,6 +21,7 @@ use crate::constrained_generic_params as cgp;
 use crate::errors;
 use crate::middle::resolve_lifetime as rl;
 use rustc_ast as ast;
+use rustc_ast::Attribute;
 use rustc_ast::{MetaItemKind, NestedMetaItem};
 use rustc_attr::{list_contains_name, InlineAttr, InstructionSetAttr, OptimizeAttr};
 use rustc_data_structures::captures::Captures;
@@ -67,6 +68,7 @@ fn collect_mod_item_types(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
 pub fn provide(providers: &mut Providers) {
     *providers = Providers {
         opt_const_param_of: type_of::opt_const_param_of,
+        default_anon_const_substs: type_of::default_anon_const_substs,
         type_of: type_of::type_of,
         item_bounds: item_bounds::item_bounds,
         explicit_item_bounds: item_bounds::explicit_item_bounds,
@@ -363,10 +365,6 @@ impl AstConv<'tcx> for ItemCtxt<'tcx> {
         Some(self.item_def_id)
     }
 
-    fn default_constness_for_trait_bounds(&self) -> hir::Constness {
-        self.node().constness()
-    }
-
     fn get_type_parameter_bounds(
         &self,
         span: Span,
@@ -640,7 +638,7 @@ fn type_param_predicates(
         )
         .into_iter()
         .filter(|(predicate, _)| match predicate.kind().skip_binder() {
-            ty::PredicateKind::Trait(data, _) => data.self_ty().is_param(index),
+            ty::PredicateKind::Trait(data) => data.self_ty().is_param(index),
             _ => false,
         }),
     );
@@ -662,7 +660,6 @@ impl ItemCtxt<'tcx> {
         only_self_bounds: OnlySelfBounds,
         assoc_name: Option<Ident>,
     ) -> Vec<(ty::Predicate<'tcx>, Span)> {
-        let constness = self.default_constness_for_trait_bounds();
         let from_ty_params = ast_generics
             .params
             .iter()
@@ -675,7 +672,7 @@ impl ItemCtxt<'tcx> {
                 Some(assoc_name) => self.bound_defines_assoc_item(b, assoc_name),
                 None => true,
             })
-            .flat_map(|b| predicates_from_bound(self, ty, b, constness));
+            .flat_map(|b| predicates_from_bound(self, ty, b));
 
         let from_where_clauses = ast_generics
             .where_clause
@@ -701,7 +698,7 @@ impl ItemCtxt<'tcx> {
                     })
                     .filter_map(move |b| bt.map(|bt| (bt, b)))
             })
-            .flat_map(|(bt, b)| predicates_from_bound(self, bt, b, constness));
+            .flat_map(|(bt, b)| predicates_from_bound(self, bt, b));
 
         from_ty_params.chain(from_where_clauses).collect()
     }
@@ -749,6 +746,7 @@ fn convert_item(tcx: TyCtxt<'_>, item_id: hir::ItemId) {
         // These don't define types.
         hir::ItemKind::ExternCrate(_)
         | hir::ItemKind::Use(..)
+        | hir::ItemKind::Macro(_)
         | hir::ItemKind::Mod(_)
         | hir::ItemKind::GlobalAsm(_) => {}
         hir::ItemKind::ForeignMod { items, .. } => {
@@ -1198,7 +1196,7 @@ fn super_predicates_that_define_assoc_type(
             // which will, in turn, reach indirect supertraits.
             for &(pred, span) in superbounds {
                 debug!("superbound: {:?}", pred);
-                if let ty::PredicateKind::Trait(bound, _) = pred.kind().skip_binder() {
+                if let ty::PredicateKind::Trait(bound) = pred.kind().skip_binder() {
                     tcx.at(span).super_predicates_of(bound.def_id());
                 }
             }
@@ -1491,7 +1489,7 @@ fn generics_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::Generics {
                 }
 
                 // HACK(eddyb) this provides the correct generics when
-                // `feature(const_generics)` is enabled, so that const expressions
+                // `feature(generic_const_expressions)` is enabled, so that const expressions
                 // used with const generics, e.g. `Foo<{N+1}>`, can work at all.
                 //
                 // Note that we do not supply the parent generics when using
@@ -2004,7 +2002,16 @@ fn predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericPredicates<'_> {
         // prove that the trait applies to the types that were
         // used, and adding the predicate into this list ensures
         // that this is done.
-        let span = tcx.sess.source_map().guess_head_span(tcx.def_span(def_id));
+        let mut span = tcx.def_span(def_id);
+        if tcx.sess.source_map().is_local_span(span) {
+            // `guess_head_span` reads the actual source file from
+            // disk to try to determine the 'head' snippet of the span.
+            // Don't do this for a span that comes from a file outside
+            // of our crate, since this would make our query output
+            // (and overall crate metadata) dependent on the
+            // *current* state of an external file.
+            span = tcx.sess.source_map().guess_head_span(span);
+        }
         result.predicates =
             tcx.arena.alloc_from_iter(result.predicates.iter().copied().chain(std::iter::once((
                 ty::TraitRef::identity(tcx, def_id).without_const().to_predicate(tcx),
@@ -2029,7 +2036,6 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
     let mut is_default_impl_trait = None;
 
     let icx = ItemCtxt::new(tcx, def_id);
-    let constness = icx.default_constness_for_trait_bounds();
 
     const NO_GENERICS: &hir::Generics<'_> = &hir::Generics::empty();
 
@@ -2225,8 +2231,10 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
                     match bound {
                         hir::GenericBound::Trait(poly_trait_ref, modifier) => {
                             let constness = match modifier {
-                                hir::TraitBoundModifier::MaybeConst => hir::Constness::NotConst,
-                                hir::TraitBoundModifier::None => constness,
+                                hir::TraitBoundModifier::None => ty::BoundConstness::NotConst,
+                                hir::TraitBoundModifier::MaybeConst => {
+                                    ty::BoundConstness::ConstIfConst
+                                }
                                 // We ignore `where T: ?Sized`, it is already part of
                                 // type parameter `T`.
                                 hir::TraitBoundModifier::Maybe => continue,
@@ -2301,7 +2309,7 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
         }
     }
 
-    if tcx.features().const_evaluatable_checked {
+    if tcx.features().generic_const_exprs {
         predicates.extend(const_evaluatable_predicates_of(tcx, def_id.expect_local()));
     }
 
@@ -2319,7 +2327,7 @@ fn gather_explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericP
             tcx,
             &mut predicates,
             trait_ref,
-            &mut cgp::parameters_for_impl(self_ty, trait_ref),
+            &mut cgp::parameters_for_impl(tcx, self_ty, trait_ref),
         );
     }
 
@@ -2354,7 +2362,7 @@ fn const_evaluatable_predicates_of<'tcx>(
                 assert_eq!(uv.promoted, None);
                 let span = self.tcx.hir().span(c.hir_id);
                 self.preds.insert((
-                    ty::PredicateKind::ConstEvaluatable(uv.def, uv.substs).to_predicate(self.tcx),
+                    ty::PredicateKind::ConstEvaluatable(uv.shrink()).to_predicate(self.tcx),
                     span,
                 ));
             }
@@ -2439,7 +2447,7 @@ fn explicit_predicates_of(tcx: TyCtxt<'_>, def_id: DefId) -> ty::GenericPredicat
             .iter()
             .copied()
             .filter(|(pred, _)| match pred.kind().skip_binder() {
-                ty::PredicateKind::Trait(tr, _) => !is_assoc_item_ty(tr.self_ty()),
+                ty::PredicateKind::Trait(tr) => !is_assoc_item_ty(tr.self_ty()),
                 ty::PredicateKind::Projection(proj) => {
                     !is_assoc_item_ty(proj.projection_ty.self_ty())
                 }
@@ -2489,14 +2497,13 @@ fn predicates_from_bound<'tcx>(
     astconv: &dyn AstConv<'tcx>,
     param_ty: Ty<'tcx>,
     bound: &'tcx hir::GenericBound<'tcx>,
-    constness: hir::Constness,
 ) -> Vec<(ty::Predicate<'tcx>, Span)> {
     match *bound {
         hir::GenericBound::Trait(ref tr, modifier) => {
             let constness = match modifier {
                 hir::TraitBoundModifier::Maybe => return vec![],
-                hir::TraitBoundModifier::MaybeConst => hir::Constness::NotConst,
-                hir::TraitBoundModifier::None => constness,
+                hir::TraitBoundModifier::MaybeConst => ty::BoundConstness::ConstIfConst,
+                hir::TraitBoundModifier::None => ty::BoundConstness::NotConst,
             };
 
             let mut bounds = Bounds::default();
@@ -2769,11 +2776,11 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
     let mut link_ordinal_span = None;
     let mut no_sanitize_span = None;
     for attr in attrs.iter() {
-        if tcx.sess.check_name(attr, sym::cold) {
+        if attr.has_name(sym::cold) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::COLD;
-        } else if tcx.sess.check_name(attr, sym::rustc_allocator) {
+        } else if attr.has_name(sym::rustc_allocator) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::ALLOCATOR;
-        } else if tcx.sess.check_name(attr, sym::ffi_returns_twice) {
+        } else if attr.has_name(sym::ffi_returns_twice) {
             if tcx.is_foreign_item(id) {
                 codegen_fn_attrs.flags |= CodegenFnAttrFlags::FFI_RETURNS_TWICE;
             } else {
@@ -2786,9 +2793,9 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 )
                 .emit();
             }
-        } else if tcx.sess.check_name(attr, sym::ffi_pure) {
+        } else if attr.has_name(sym::ffi_pure) {
             if tcx.is_foreign_item(id) {
-                if attrs.iter().any(|a| tcx.sess.check_name(a, sym::ffi_const)) {
+                if attrs.iter().any(|a| a.has_name(sym::ffi_const)) {
                     // `#[ffi_const]` functions cannot be `#[ffi_pure]`
                     struct_span_err!(
                         tcx.sess,
@@ -2810,7 +2817,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 )
                 .emit();
             }
-        } else if tcx.sess.check_name(attr, sym::ffi_const) {
+        } else if attr.has_name(sym::ffi_const) {
             if tcx.is_foreign_item(id) {
                 codegen_fn_attrs.flags |= CodegenFnAttrFlags::FFI_CONST;
             } else {
@@ -2823,19 +2830,19 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 )
                 .emit();
             }
-        } else if tcx.sess.check_name(attr, sym::rustc_allocator_nounwind) {
+        } else if attr.has_name(sym::rustc_allocator_nounwind) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::NEVER_UNWIND;
-        } else if tcx.sess.check_name(attr, sym::naked) {
+        } else if attr.has_name(sym::naked) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::NAKED;
-        } else if tcx.sess.check_name(attr, sym::no_mangle) {
+        } else if attr.has_name(sym::no_mangle) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::NO_MANGLE;
-        } else if tcx.sess.check_name(attr, sym::no_coverage) {
+        } else if attr.has_name(sym::no_coverage) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::NO_COVERAGE;
-        } else if tcx.sess.check_name(attr, sym::rustc_std_internal_symbol) {
+        } else if attr.has_name(sym::rustc_std_internal_symbol) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::RUSTC_STD_INTERNAL_SYMBOL;
-        } else if tcx.sess.check_name(attr, sym::used) {
+        } else if attr.has_name(sym::used) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::USED;
-        } else if tcx.sess.check_name(attr, sym::cmse_nonsecure_entry) {
+        } else if attr.has_name(sym::cmse_nonsecure_entry) {
             if !matches!(tcx.fn_sig(id).abi(), abi::Abi::C { .. }) {
                 struct_span_err!(
                     tcx.sess,
@@ -2850,15 +2857,15 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                     .emit();
             }
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::CMSE_NONSECURE_ENTRY;
-        } else if tcx.sess.check_name(attr, sym::thread_local) {
+        } else if attr.has_name(sym::thread_local) {
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::THREAD_LOCAL;
-        } else if tcx.sess.check_name(attr, sym::track_caller) {
+        } else if attr.has_name(sym::track_caller) {
             if tcx.is_closure(id) || tcx.fn_sig(id).abi() != abi::Abi::Rust {
                 struct_span_err!(tcx.sess, attr.span, E0737, "`#[track_caller]` requires Rust ABI")
                     .emit();
             }
             codegen_fn_attrs.flags |= CodegenFnAttrFlags::TRACK_CALLER;
-        } else if tcx.sess.check_name(attr, sym::export_name) {
+        } else if attr.has_name(sym::export_name) {
             if let Some(s) = attr.value_str() {
                 if s.as_str().contains('\0') {
                     // `#[export_name = ...]` will be converted to a null-terminated string,
@@ -2873,7 +2880,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 }
                 codegen_fn_attrs.export_name = Some(s);
             }
-        } else if tcx.sess.check_name(attr, sym::target_feature) {
+        } else if attr.has_name(sym::target_feature) {
             if !tcx.is_closure(id) && tcx.fn_sig(id).unsafety() == hir::Unsafety::Normal {
                 if tcx.sess.target.is_like_wasm || tcx.sess.opts.actually_rustdoc {
                     // The `#[target_feature]` attribute is allowed on
@@ -2913,11 +2920,11 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 &supported_target_features,
                 &mut codegen_fn_attrs.target_features,
             );
-        } else if tcx.sess.check_name(attr, sym::linkage) {
+        } else if attr.has_name(sym::linkage) {
             if let Some(val) = attr.value_str() {
                 codegen_fn_attrs.linkage = Some(linkage_by_name(tcx, id, &val.as_str()));
             }
-        } else if tcx.sess.check_name(attr, sym::link_section) {
+        } else if attr.has_name(sym::link_section) {
             if let Some(val) = attr.value_str() {
                 if val.as_str().bytes().any(|b| b == 0) {
                     let msg = format!(
@@ -2930,14 +2937,14 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                     codegen_fn_attrs.link_section = Some(val);
                 }
             }
-        } else if tcx.sess.check_name(attr, sym::link_name) {
+        } else if attr.has_name(sym::link_name) {
             codegen_fn_attrs.link_name = attr.value_str();
-        } else if tcx.sess.check_name(attr, sym::link_ordinal) {
+        } else if attr.has_name(sym::link_ordinal) {
             link_ordinal_span = Some(attr.span);
             if let ordinal @ Some(_) = check_link_ordinal(tcx, attr) {
                 codegen_fn_attrs.link_ordinal = ordinal;
             }
-        } else if tcx.sess.check_name(attr, sym::no_sanitize) {
+        } else if attr.has_name(sym::no_sanitize) {
             no_sanitize_span = Some(attr.span);
             if let Some(list) = attr.meta_item_list() {
                 for item in list.iter() {
@@ -2957,7 +2964,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                     }
                 }
             }
-        } else if tcx.sess.check_name(attr, sym::instruction_set) {
+        } else if attr.has_name(sym::instruction_set) {
             codegen_fn_attrs.instruction_set = match attr.meta().map(|i| i.kind) {
                 Some(MetaItemKind::List(ref items)) => match items.as_slice() {
                     [NestedMetaItem::MetaItem(set)] => {
@@ -3026,7 +3033,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                     None
                 }
             };
-        } else if tcx.sess.check_name(attr, sym::repr) {
+        } else if attr.has_name(sym::repr) {
             codegen_fn_attrs.alignment = match attr.meta_item_list() {
                 Some(items) => match items.as_slice() {
                     [item] => match item.name_value_literal() {
@@ -3064,12 +3071,8 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
             return ia;
         }
         match attr.meta().map(|i| i.kind) {
-            Some(MetaItemKind::Word) => {
-                tcx.sess.mark_attr_used(attr);
-                InlineAttr::Hint
-            }
+            Some(MetaItemKind::Word) => InlineAttr::Hint,
             Some(MetaItemKind::List(ref items)) => {
-                tcx.sess.mark_attr_used(attr);
                 inline_span = Some(attr.span);
                 if items.len() != 1 {
                     struct_span_err!(
@@ -3112,7 +3115,6 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
                 ia
             }
             Some(MetaItemKind::List(ref items)) => {
-                tcx.sess.mark_attr_used(attr);
                 inline_span = Some(attr.span);
                 if items.len() != 1 {
                     err(attr.span, "expected one argument");
@@ -3181,7 +3183,7 @@ fn codegen_fn_attrs(tcx: TyCtxt<'_>, id: DefId) -> CodegenFnAttrs {
     if tcx.is_weak_lang_item(id) {
         codegen_fn_attrs.flags |= CodegenFnAttrFlags::RUSTC_STD_INTERNAL_SYMBOL;
     }
-    let check_name = |attr, sym| tcx.sess.check_name(attr, sym);
+    let check_name = |attr: &Attribute, sym| attr.has_name(sym);
     if let Some(name) = weak_lang_items::link_name(check_name, &attrs) {
         codegen_fn_attrs.export_name = Some(name);
         codegen_fn_attrs.link_name = Some(name);

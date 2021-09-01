@@ -520,7 +520,10 @@ pub trait BuildHasher {
     /// );
     /// ```
     #[unstable(feature = "build_hasher_simple_hash_one", issue = "86161")]
-    fn hash_one<T: Hash>(&self, x: T) -> u64 {
+    fn hash_one<T: Hash>(&self, x: T) -> u64
+    where
+        Self: Sized,
+    {
         let mut hasher = self.build_hasher();
         x.hash(&mut hasher);
         hasher.finish()
@@ -599,7 +602,8 @@ impl<H> Clone for BuildHasherDefault<H> {
 }
 
 #[stable(since = "1.7.0", feature = "build_hasher")]
-impl<H> Default for BuildHasherDefault<H> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<H> const Default for BuildHasherDefault<H> {
     fn default() -> BuildHasherDefault<H> {
         BuildHasherDefault(marker::PhantomData)
     }

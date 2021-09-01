@@ -209,7 +209,7 @@ where
 impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
     #[allow(rustc::usage_of_ty_tykind)]
     fn decode(decoder: &mut D) -> Result<Ty<'tcx>, D::Error> {
-        // Handle shorthands first, if we have an usize > 0x80.
+        // Handle shorthands first, if we have a usize > 0x80.
         if decoder.positioned_at_shorthand() {
             let pos = decoder.read_usize()?;
             assert!(pos >= SHORTHAND_OFFSET);
@@ -228,7 +228,7 @@ impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for Ty<'tcx> {
 impl<'tcx, D: TyDecoder<'tcx>> Decodable<D> for ty::Binder<'tcx, ty::PredicateKind<'tcx>> {
     fn decode(decoder: &mut D) -> Result<ty::Binder<'tcx, ty::PredicateKind<'tcx>>, D::Error> {
         let bound_vars = Decodable::decode(decoder)?;
-        // Handle shorthands first, if we have an usize > 0x80.
+        // Handle shorthands first, if we have a usize > 0x80.
         Ok(ty::Binder::bind_with_vars(
             if decoder.positioned_at_shorthand() {
                 let pos = decoder.read_usize()?;
@@ -437,15 +437,15 @@ macro_rules! impl_arena_allocatable_decoder {
 }
 
 macro_rules! impl_arena_allocatable_decoders {
-    ([], [$($a:tt $name:ident: $ty:ty,)*], $tcx:lifetime) => {
+    ([$($a:tt $name:ident: $ty:ty,)*], $tcx:lifetime) => {
         $(
             impl_arena_allocatable_decoder!($a [[$name: $ty], $tcx]);
         )*
     }
 }
 
-rustc_hir::arena_types!(impl_arena_allocatable_decoders, [], 'tcx);
-arena_types!(impl_arena_allocatable_decoders, [], 'tcx);
+rustc_hir::arena_types!(impl_arena_allocatable_decoders, 'tcx);
+arena_types!(impl_arena_allocatable_decoders, 'tcx);
 
 #[macro_export]
 macro_rules! implement_ty_decoder {

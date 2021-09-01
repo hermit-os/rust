@@ -559,7 +559,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         self.cx.force_mode = orig_force_mode;
 
         // Finally incorporate all the expanded macros into the input AST fragment.
-        let mut placeholder_expander = PlaceholderExpander::default();
+        let mut placeholder_expander = PlaceholderExpander::new(self.cx, self.monotonic);
         while let Some(expanded_fragments) = expanded_fragments.pop() {
             for (expn_id, expanded_fragment) in expanded_fragments.into_iter().rev() {
                 placeholder_expander
@@ -753,11 +753,8 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         }
                     }
                 }
-                SyntaxExtensionKind::NonMacroAttr { mark_used } => {
+                SyntaxExtensionKind::NonMacroAttr => {
                     self.cx.expanded_inert_attrs.mark(&attr);
-                    if *mark_used {
-                        self.cx.sess.mark_attr_used(&attr);
-                    }
                     item.visit_attrs(|attrs| attrs.insert(pos, attr));
                     fragment_kind.expect_from_annotatables(iter::once(item))
                 }
@@ -1341,9 +1338,14 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
             }
         }
 
+        // The placeholder expander gives ids to statements, so we avoid folding the id here.
         // We don't use `assign_id!` - it will be called when we visit statement's contents
         // (e.g. an expression, item, or local)
-        let res = noop_flat_map_stmt(stmt, self);
+        let ast::Stmt { id, kind, span } = stmt;
+        let res = noop_flat_map_stmt_kind(kind, self)
+            .into_iter()
+            .map(|kind| ast::Stmt { id, kind, span })
+            .collect();
 
         self.cx.current_expansion.is_trailing_mac = false;
         res

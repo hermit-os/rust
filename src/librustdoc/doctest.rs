@@ -99,7 +99,7 @@ crate fn run(options: Options) -> Result<(), ErrorReported> {
         stderr: None,
         lint_caps,
         parse_sess_created: None,
-        register_lints: Some(box crate::lint::register_lints),
+        register_lints: Some(Box::new(crate::lint::register_lints)),
         override_queries: None,
         make_codegen_backend: None,
         registry: rustc_driver::diagnostics_registry(),
@@ -549,10 +549,10 @@ crate fn make_test(
                     .supports_color();
 
             let emitter =
-                EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
+                EmitterWriter::new(Box::new(io::sink()), None, false, false, false, None, false);
 
             // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
-            let handler = Handler::with_emitter(false, None, box emitter);
+            let handler = Handler::with_emitter(false, None, Box::new(emitter));
             let sess = ParseSess::with_span_handler(handler, sm);
 
             let mut found_main = false;
@@ -962,7 +962,7 @@ impl Tester for Collector {
                 no_run,
                 test_type: test::TestType::DocTest,
             },
-            testfn: test::DynTestFn(box move || {
+            testfn: test::DynTestFn(Box::new(move || {
                 let report_unused_externs = |uext| {
                     unused_externs.lock().unwrap().push(uext);
                 };
@@ -1042,9 +1042,9 @@ impl Tester for Collector {
                         }
                     }
 
-                    panic::resume_unwind(box ());
+                    panic::resume_unwind(Box::new(()));
                 }
-            }),
+            })),
         });
     }
 
@@ -1171,10 +1171,21 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
     }
 
     fn visit_item(&mut self, item: &'hir hir::Item<'_>) {
-        let name = if let hir::ItemKind::Impl(impl_) = &item.kind {
-            rustc_hir_pretty::id_to_string(&self.map, impl_.self_ty.hir_id)
-        } else {
-            item.ident.to_string()
+        let name = match &item.kind {
+            hir::ItemKind::Macro(ref macro_def) => {
+                // FIXME(#88038): Non exported macros have historically not been tested,
+                // but we really ought to start testing them.
+                let def_id = item.def_id.to_def_id();
+                if macro_def.macro_rules && !self.tcx.has_attr(def_id, sym::macro_export) {
+                    intravisit::walk_item(self, item);
+                    return;
+                }
+                item.ident.to_string()
+            }
+            hir::ItemKind::Impl(impl_) => {
+                rustc_hir_pretty::id_to_string(&self.map, impl_.self_ty.hir_id)
+            }
+            _ => item.ident.to_string(),
         };
 
         self.visit_testable(name, item.hir_id(), item.span, |this| {
@@ -1215,15 +1226,6 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
         self.visit_testable(f.ident.to_string(), f.hir_id, f.span, |this| {
             intravisit::walk_field_def(this, f);
         });
-    }
-
-    fn visit_macro_def(&mut self, macro_def: &'hir hir::MacroDef<'_>) {
-        self.visit_testable(
-            macro_def.ident.to_string(),
-            macro_def.hir_id(),
-            macro_def.span,
-            |_| (),
-        );
     }
 }
 

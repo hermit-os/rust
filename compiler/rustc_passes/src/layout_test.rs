@@ -27,7 +27,7 @@ impl ItemLikeVisitor<'tcx> for LayoutTest<'tcx> {
             | ItemKind::Struct(..)
             | ItemKind::Union(..) => {
                 for attr in self.tcx.get_attrs(item.def_id.to_def_id()).iter() {
-                    if self.tcx.sess.check_name(attr, sym::rustc_layout) {
+                    if attr.has_name(sym::rustc_layout) {
                         self.dump_layout_of(item.def_id, item, attr);
                     }
                 }
@@ -113,7 +113,7 @@ struct UnwrapLayoutCx<'tcx> {
     param_env: ParamEnv<'tcx>,
 }
 
-impl LayoutOf for UnwrapLayoutCx<'tcx> {
+impl LayoutOf<'tcx> for UnwrapLayoutCx<'tcx> {
     type Ty = Ty<'tcx>;
     type TyAndLayout = TyAndLayout<'tcx>;
 

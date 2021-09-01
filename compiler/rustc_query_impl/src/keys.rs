@@ -20,6 +20,12 @@ pub trait Key {
     /// In the event that a cycle occurs, if no explicit span has been
     /// given for a query with key `self`, what span should we use?
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span;
+
+    /// If the key is a [`DefId`] or `DefId`--equivalent, return that `DefId`.
+    /// Otherwise, return `None`.
+    fn key_as_def_id(&self) -> Option<DefId> {
+        None
+    }
 }
 
 impl Key for () {
@@ -95,6 +101,9 @@ impl Key for LocalDefId {
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
         self.to_def_id().default_span(tcx)
     }
+    fn key_as_def_id(&self) -> Option<DefId> {
+        Some(self.to_def_id())
+    }
 }
 
 impl Key for DefId {
@@ -104,6 +113,10 @@ impl Key for DefId {
     }
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
         tcx.def_span(*self)
+    }
+    #[inline(always)]
+    fn key_as_def_id(&self) -> Option<DefId> {
+        Some(*self)
     }
 }
 
@@ -165,6 +178,10 @@ impl Key for (DefId, Option<Ident>) {
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
         tcx.def_span(self.0)
     }
+    #[inline(always)]
+    fn key_as_def_id(&self) -> Option<DefId> {
+        Some(self.0)
+    }
 }
 
 impl Key for (DefId, LocalDefId, Ident) {
@@ -217,18 +234,13 @@ impl<'tcx> Key for (DefId, SubstsRef<'tcx>) {
     }
 }
 
-impl<'tcx> Key
-    for (
-        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
-        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
-    )
-{
+impl<'tcx> Key for (ty::Unevaluated<'tcx, ()>, ty::Unevaluated<'tcx, ()>) {
     #[inline(always)]
     fn query_crate_is_local(&self) -> bool {
-        (self.0).0.did.krate == LOCAL_CRATE
+        (self.0).def.did.krate == LOCAL_CRATE
     }
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
-        (self.0).0.did.default_span(tcx)
+        (self.0).def.did.default_span(tcx)
     }
 }
 
@@ -323,6 +335,16 @@ impl<'tcx> Key for &'tcx ty::Const<'tcx> {
 }
 
 impl<'tcx> Key for Ty<'tcx> {
+    #[inline(always)]
+    fn query_crate_is_local(&self) -> bool {
+        true
+    }
+    fn default_span(&self, _: TyCtxt<'_>) -> Span {
+        DUMMY_SP
+    }
+}
+
+impl<'tcx> Key for (Ty<'tcx>, Ty<'tcx>) {
     #[inline(always)]
     fn query_crate_is_local(&self) -> bool {
         true

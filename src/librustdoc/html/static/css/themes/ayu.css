@@ -40,7 +40,7 @@ h4 {
 .code-header {
 	color: #e6e1cf;
 }
-pre > code {
+.docblock pre > code, pre > code {
 	color: #e6e1cf;
 }
 span code {
@@ -215,6 +215,9 @@ nav.main .separator {
 }
 a {
 	color: #c5c5c5;
+}
+body.source .example-wrap pre.rust a {
+	background: #c5c5c5;
 }
 
 .docblock:not(.type-decl) a:not(.srclink):not(.test-arrow),

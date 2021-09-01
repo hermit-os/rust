@@ -124,7 +124,7 @@ impl Elaborator<'tcx> {
 
         let bound_predicate = obligation.predicate.kind();
         match bound_predicate.skip_binder() {
-            ty::PredicateKind::Trait(data, _) => {
+            ty::PredicateKind::Trait(data) => {
                 // Get predicates declared on the trait.
                 let predicates = tcx.super_predicates_of(data.def_id());
 
@@ -156,6 +156,10 @@ impl Elaborator<'tcx> {
             }
             ty::PredicateKind::Subtype(..) => {
                 // Currently, we do not "elaborate" predicates like `X <: Y`,
+                // though conceivably we might.
+            }
+            ty::PredicateKind::Coerce(..) => {
+                // Currently, we do not "elaborate" predicates like `X -> Y`,
                 // though conceivably we might.
             }
             ty::PredicateKind::Projection(..) => {

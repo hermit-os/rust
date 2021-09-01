@@ -70,15 +70,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     pub fn report_method_error(
         &self,
-        span: Span,
+        mut span: Span,
         rcvr_ty: Ty<'tcx>,
         item_name: Ident,
         source: SelfSource<'tcx>,
         error: MethodError<'tcx>,
         args: Option<&'tcx [hir::Expr<'tcx>]>,
     ) -> Option<DiagnosticBuilder<'_>> {
-        let orig_span = span;
-        let mut span = span;
         // Avoid suggestions when we don't know what's going on.
         if rcvr_ty.references_error() {
             return None;
@@ -545,7 +543,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     } else {
                         err.span_label(span, format!("{item_kind} cannot be called on `{ty_str}` due to unsatisfied trait bounds"));
                     }
-                    self.tcx.sess.trait_methods_not_found.borrow_mut().insert(orig_span);
                 };
 
                 // If the method name is the name of a field with a function or closure type,
@@ -683,7 +680,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let mut collect_type_param_suggestions =
                         |self_ty: Ty<'tcx>, parent_pred: &ty::Predicate<'tcx>, obligation: &str| {
                             // We don't care about regions here, so it's fine to skip the binder here.
-                            if let (ty::Param(_), ty::PredicateKind::Trait(p, _)) =
+                            if let (ty::Param(_), ty::PredicateKind::Trait(p)) =
                                 (self_ty.kind(), parent_pred.kind().skip_binder())
                             {
                                 if let ty::Adt(def, _) = p.trait_ref.self_ty().kind() {
@@ -763,7 +760,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 bound_span_label(projection_ty.self_ty(), &obligation, &quiet);
                                 Some((obligation, projection_ty.self_ty()))
                             }
-                            ty::PredicateKind::Trait(poly_trait_ref, _) => {
+                            ty::PredicateKind::Trait(poly_trait_ref) => {
                                 let p = poly_trait_ref.trait_ref;
                                 let self_ty = p.self_ty();
                                 let path = p.print_only_trait_path();
@@ -1200,7 +1197,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     match p.kind().skip_binder() {
                         // Hide traits if they are present in predicates as they can be fixed without
                         // having to implement them.
-                        ty::PredicateKind::Trait(t, _) => t.def_id() == info.def_id,
+                        ty::PredicateKind::Trait(t) => t.def_id() == info.def_id,
                         ty::PredicateKind::Projection(p) => {
                             p.projection_ty.item_def_id == info.def_id
                         }

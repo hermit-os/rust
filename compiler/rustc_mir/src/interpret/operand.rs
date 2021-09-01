@@ -295,7 +295,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// we can find the data.
     /// Note that for a given layout, this operation will either always fail or always
     /// succeed!  Whether it succeeds depends on whether the layout can be represented
-    /// in a `Immediate`, not on which data is stored there currently.
+    /// in an `Immediate`, not on which data is stored there currently.
     pub(crate) fn try_read_immediate(
         &self,
         src: &OpTy<'tcx, M::PointerTag>,
@@ -364,7 +364,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             Err(value) => value,
         };
 
-        let field_layout = op.layout.field(self, field)?;
+        let field_layout = op.layout.field(self, field);
         if field_layout.is_zst() {
             let immediate = Scalar::ZST.into();
             return Ok(OpTy { op: Operand::Immediate(immediate), layout: field_layout });
@@ -555,9 +555,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         match val.val {
             ty::ConstKind::Param(_) | ty::ConstKind::Bound(..) => throw_inval!(TooGeneric),
             ty::ConstKind::Error(_) => throw_inval!(AlreadyReported(ErrorReported)),
-            ty::ConstKind::Unevaluated(ty::Unevaluated { def, substs, promoted }) => {
-                let instance = self.resolve(def, substs)?;
-                Ok(self.eval_to_allocation(GlobalId { instance, promoted })?.into())
+            ty::ConstKind::Unevaluated(uv) => {
+                let instance = self.resolve(uv.def, uv.substs(*self.tcx))?;
+                Ok(self.eval_to_allocation(GlobalId { instance, promoted: uv.promoted })?.into())
             }
             ty::ConstKind::Infer(..) | ty::ConstKind::Placeholder(..) => {
                 span_bug!(self.cur_span(), "const_to_op: Unexpected ConstKind {:?}", val)

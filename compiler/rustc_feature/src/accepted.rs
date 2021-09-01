@@ -178,7 +178,7 @@ declare_features! (
     /// Allows annotating functions conforming to `fn(&PanicInfo) -> !` with `#[panic_handler]`.
     /// This defines the behavior of panics.
     (accepted, panic_handler, "1.30.0", Some(44489), None),
-    /// Allows `#[used]` to preserve symbols (see llvm.used).
+    /// Allows `#[used]` to preserve symbols (see llvm.compiler.used).
     (accepted, used, "1.30.0", Some(40289), None),
     /// Allows `crate` in paths.
     (accepted, crate_in_paths, "1.30.0", Some(45477), None),
@@ -273,7 +273,7 @@ declare_features! (
     /// Allows patterns with concurrent by-move and by-ref bindings.
     /// For example, you can write `Foo(a, ref b)` where `a` is by-move and `b` is by-ref.
     (accepted, move_ref_pattern, "1.49.0", Some(68354), None),
-    /// The smallest useful subset of `const_generics`.
+    /// The smallest useful subset of const generics.
     (accepted, min_const_generics, "1.51.0", Some(74878), None),
     /// The `unsafe_op_in_unsafe_fn` lint (allowed by default): no longer treat an unsafe function as an unsafe block.
     (accepted, unsafe_block_in_unsafe_fn, "1.52.0", Some(71668), None),
@@ -294,6 +294,8 @@ declare_features! (
     (accepted, const_fn_transmute, "1.56.0", Some(53605), None),
     /// Allows accessing fields of unions inside `const` functions.
     (accepted, const_fn_union, "1.56.0", Some(51909), None),
+    /// Allows explicit discriminants on non-unit enum variants.
+    (accepted, arbitrary_enum_discriminant, "1.56.0", Some(60553), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: accepted features

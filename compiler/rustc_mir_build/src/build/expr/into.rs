@@ -53,46 +53,64 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 this.match_expr(destination, expr_span, block, &this.thir[scrutinee], arms)
             }
             ExprKind::If { cond, then, else_opt } => {
-                let place = unpack!(
-                    block = this.as_temp(
-                        block,
-                        Some(this.local_scope()),
-                        &this.thir[cond],
-                        Mutability::Mut
-                    )
-                );
-                let operand = Operand::Move(Place::from(place));
-
-                let mut then_block = this.cfg.start_new_block();
-                let mut else_block = this.cfg.start_new_block();
-                let term = TerminatorKind::if_(this.tcx, operand, then_block, else_block);
-                this.cfg.terminate(block, source_info, term);
-
-                unpack!(
-                    then_block = this.expr_into_dest(destination, then_block, &this.thir[then])
-                );
-                else_block = if let Some(else_opt) = else_opt {
-                    unpack!(this.expr_into_dest(destination, else_block, &this.thir[else_opt]))
+                let local_scope = this.local_scope();
+                let (mut then_blk, mut else_blk) =
+                    this.then_else_blocks(block, &this.thir[cond], local_scope, source_info);
+                unpack!(then_blk = this.expr_into_dest(destination, then_blk, &this.thir[then]));
+                else_blk = if let Some(else_opt) = else_opt {
+                    unpack!(this.expr_into_dest(destination, else_blk, &this.thir[else_opt]))
                 } else {
                     // Body of the `if` expression without an `else` clause must return `()`, thus
-                    // we implicitly generate a `else {}` if it is not specified.
+                    // we implicitly generate an `else {}` if it is not specified.
                     let correct_si = this.source_info(expr_span.shrink_to_hi());
-                    this.cfg.push_assign_unit(else_block, correct_si, destination, this.tcx);
-                    else_block
+                    this.cfg.push_assign_unit(else_blk, correct_si, destination, this.tcx);
+                    else_blk
                 };
 
                 let join_block = this.cfg.start_new_block();
                 this.cfg.terminate(
-                    then_block,
+                    then_blk,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
                 this.cfg.terminate(
-                    else_block,
+                    else_blk,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
 
+                join_block.unit()
+            }
+            ExprKind::Let { ref pat, expr } => {
+                let (true_block, false_block) =
+                    this.lower_let(block, &this.thir[expr], pat, expr_span);
+
+                let join_block = this.cfg.start_new_block();
+
+                this.cfg.push_assign_constant(
+                    true_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        user_ty: None,
+                        literal: ty::Const::from_bool(this.tcx, true).into(),
+                    },
+                );
+
+                this.cfg.push_assign_constant(
+                    false_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        user_ty: None,
+                        literal: ty::Const::from_bool(this.tcx, false).into(),
+                    },
+                );
+
+                this.cfg.goto(true_block, source_info, join_block);
+                this.cfg.goto(false_block, source_info, join_block);
                 join_block.unit()
             }
             ExprKind::NeverToAny { source } => {
@@ -190,7 +208,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     );
                     this.diverge_from(loop_block);
 
-                    // The “return” value of the loop body must always be an unit. We therefore
+                    // The “return” value of the loop body must always be a unit. We therefore
                     // introduce a unit temporary as the destination for the loop body.
                     let tmp = this.get_unit_temp();
                     // Execute the body, branching back to the test.
@@ -328,13 +346,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         inferred_ty,
                     })
                 });
-                let adt = box AggregateKind::Adt(
+                let adt = Box::new(AggregateKind::Adt(
                     adt_def,
                     variant_index,
                     substs,
                     user_ty,
                     active_field_index,
-                );
+                ));
                 this.cfg.push_assign(
                     block,
                     source_info,
@@ -385,11 +403,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         }
                         thir::InlineAsmOperand::Const { value, span } => {
                             mir::InlineAsmOperand::Const {
-                                value: box Constant { span, user_ty: None, literal: value.into() },
+                                value: Box::new(Constant {
+                                    span,
+                                    user_ty: None,
+                                    literal: value.into(),
+                                }),
                             }
                         }
                         thir::InlineAsmOperand::SymFn { expr } => mir::InlineAsmOperand::SymFn {
-                            value: box this.as_constant(&this.thir[expr]),
+                            value: Box::new(this.as_constant(&this.thir[expr])),
                         },
                         thir::InlineAsmOperand::SymStatic { def_id } => {
                             mir::InlineAsmOperand::SymStatic { def_id }

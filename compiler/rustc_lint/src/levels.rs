@@ -37,9 +37,6 @@ fn lint_levels(tcx: TyCtxt<'_>, (): ()) -> LintLevelMap {
 
     let push = builder.levels.push(tcx.hir().attrs(hir::CRATE_HIR_ID), &store, true);
     builder.levels.register_id(hir::CRATE_HIR_ID);
-    for macro_def in krate.exported_macros() {
-        builder.levels.register_id(macro_def.hir_id());
-    }
     intravisit::walk_crate(&mut builder, krate);
     builder.levels.pop(push);
 
@@ -235,8 +232,6 @@ impl<'s> LintLevelsBuilder<'s> {
                 None => continue,
                 Some(lvl) => lvl,
             };
-
-            self.sess.mark_attr_used(attr);
 
             let mut metas = unwrap_or!(attr.meta_item_list(), continue);
 

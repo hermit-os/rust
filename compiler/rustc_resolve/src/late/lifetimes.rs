@@ -740,6 +740,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
 
             hir::ItemKind::ExternCrate(_)
             | hir::ItemKind::Use(..)
+            | hir::ItemKind::Macro(..)
             | hir::ItemKind::Mod(..)
             | hir::ItemKind::ForeignMod { .. }
             | hir::ItemKind::GlobalAsm(..) => {
@@ -2057,9 +2058,13 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                             if let Some(def_id) = parent_def_id.as_local() {
                                 let parent_hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
                                 // lifetimes in `derive` expansions don't count (Issue #53738)
-                                if self.tcx.hir().attrs(parent_hir_id).iter().any(|attr| {
-                                    self.tcx.sess.check_name(attr, sym::automatically_derived)
-                                }) {
+                                if self
+                                    .tcx
+                                    .hir()
+                                    .attrs(parent_hir_id)
+                                    .iter()
+                                    .any(|attr| attr.has_name(sym::automatically_derived))
+                                {
                                     continue;
                                 }
                             }
@@ -2296,7 +2301,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             match *scope {
                 Scope::Body { id, s } => {
                     // Non-static lifetimes are prohibited in anonymous constants without
-                    // `const_generics`.
+                    // `generic_const_exprs`.
                     self.maybe_emit_forbidden_non_static_lifetime_error(id, lifetime_ref);
 
                     outermost_body = Some(id);
@@ -2657,7 +2662,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             let obligations = predicates.predicates.iter().filter_map(|&(pred, _)| {
                 let bound_predicate = pred.kind();
                 match bound_predicate.skip_binder() {
-                    ty::PredicateKind::Trait(data, _) => {
+                    ty::PredicateKind::Trait(data) => {
                         // The order here needs to match what we would get from `subst_supertrait`
                         let pred_bound_vars = bound_predicate.bound_vars();
                         let mut all_bound_vars = bound_vars.clone();

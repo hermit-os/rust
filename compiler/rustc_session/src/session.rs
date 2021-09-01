@@ -23,8 +23,8 @@ use rustc_errors::registry::Registry;
 use rustc_errors::{DiagnosticBuilder, DiagnosticId, ErrorReported};
 use rustc_macros::HashStable_Generic;
 pub use rustc_span::def_id::StableCrateId;
+use rustc_span::edition::Edition;
 use rustc_span::source_map::{FileLoader, MultiSpan, RealFileLoader, SourceMap, Span};
-use rustc_span::{edition::Edition, RealFileName};
 use rustc_span::{sym, SourceFileHashAlgorithm, Symbol};
 use rustc_target::asm::InlineAsmArch;
 use rustc_target::spec::{CodeModel, PanicStrategy, RelocModel, RelroLevel};
@@ -139,8 +139,6 @@ pub struct Session {
     /// The name of the root source file of the crate, in the local file system.
     /// `None` means that there is no source file.
     pub local_crate_source_file: Option<PathBuf>,
-    /// The directory the compiler has been executed in
-    pub working_dir: RealFileName,
 
     /// Set of `(DiagnosticId, Option<Span>, message)` tuples tracking
     /// (sub)diagnostics that have been set once, but should not be set again,
@@ -191,9 +189,6 @@ pub struct Session {
     /// Cap lint level specified by a driver specifically.
     pub driver_lint_caps: FxHashMap<lint::LintId, lint::Level>,
 
-    /// `Span`s of trait methods that weren't found to avoid emitting object safety errors
-    pub trait_methods_not_found: Lock<FxHashSet<Span>>,
-
     /// Mapping from ident span to path span for paths that don't exist as written, but that
     /// exist under `std`. For example, wrote `str::from_utf8` instead of `std::str::from_utf8`.
     pub confused_type_with_std_module: Lock<FxHashMap<Span, Span>>,
@@ -214,11 +209,6 @@ pub struct Session {
 
     /// Set of enabled features for the current target.
     pub target_features: FxHashSet<Symbol>,
-
-    used_attrs: Lock<MarkedAttrs>,
-
-    /// `Span`s for `if` conditions that we have suggested turning into `if let`.
-    pub if_let_suggestions: Lock<FxHashSet<Span>>,
 }
 
 pub struct PerfStats {
@@ -1068,39 +1058,14 @@ impl Session {
             == config::InstrumentCoverage::ExceptUnusedFunctions
     }
 
-    pub fn mark_attr_used(&self, attr: &Attribute) {
-        self.used_attrs.lock().mark(attr)
-    }
-
-    pub fn is_attr_used(&self, attr: &Attribute) -> bool {
-        self.used_attrs.lock().is_marked(attr)
-    }
-
-    /// Returns `true` if the attribute's path matches the argument. If it
-    /// matches, then the attribute is marked as used.
-    ///
-    /// This method should only be used by rustc, other tools can use
-    /// `Attribute::has_name` instead, because only rustc is supposed to report
-    /// the `unused_attributes` lint. (`MetaItem` and `NestedMetaItem` are
-    /// produced by lowering an `Attribute` and don't have identity, so they
-    /// only have the `has_name` method, and you need to mark the original
-    /// `Attribute` as used when necessary.)
-    pub fn check_name(&self, attr: &Attribute, name: Symbol) -> bool {
-        let matches = attr.has_name(name);
-        if matches {
-            self.mark_attr_used(attr);
-        }
-        matches
-    }
-
     pub fn is_proc_macro_attr(&self, attr: &Attribute) -> bool {
         [sym::proc_macro, sym::proc_macro_attribute, sym::proc_macro_derive]
             .iter()
-            .any(|kind| self.check_name(attr, *kind))
+            .any(|kind| attr.has_name(*kind))
     }
 
     pub fn contains_name(&self, attrs: &[Attribute], name: Symbol) -> bool {
-        attrs.iter().any(|item| self.check_name(item, name))
+        attrs.iter().any(|item| item.has_name(name))
     }
 
     pub fn find_by_name<'a>(
@@ -1108,7 +1073,7 @@ impl Session {
         attrs: &'a [Attribute],
         name: Symbol,
     ) -> Option<&'a Attribute> {
-        attrs.iter().find(|attr| self.check_name(attr, name))
+        attrs.iter().find(|attr| attr.has_name(name))
     }
 
     pub fn filter_by_name<'a>(
@@ -1116,7 +1081,7 @@ impl Session {
         attrs: &'a [Attribute],
         name: Symbol,
     ) -> impl Iterator<Item = &'a Attribute> {
-        attrs.iter().filter(move |attr| self.check_name(attr, name))
+        attrs.iter().filter(move |attr| attr.has_name(name))
     }
 
     pub fn first_attr_value_str_by_name(
@@ -1124,7 +1089,7 @@ impl Session {
         attrs: &[Attribute],
         name: Symbol,
     ) -> Option<Symbol> {
-        attrs.iter().find(|at| self.check_name(at, name)).and_then(|at| at.value_str())
+        attrs.iter().find(|at| at.has_name(name)).and_then(|at| at.value_str())
     }
 }
 
@@ -1304,16 +1269,6 @@ pub fn build_session(
     let print_fuel_crate = sopts.debugging_opts.print_fuel.clone();
     let print_fuel = AtomicU64::new(0);
 
-    let working_dir = env::current_dir().unwrap_or_else(|e| {
-        parse_sess.span_diagnostic.fatal(&format!("Current directory is invalid: {}", e)).raise()
-    });
-    let (path, remapped) = file_path_mapping.map_prefix(working_dir.clone());
-    let working_dir = if remapped {
-        RealFileName::Remapped { local_path: Some(working_dir), virtual_name: path }
-    } else {
-        RealFileName::LocalPath(path)
-    };
-
     let cgu_reuse_tracker = if sopts.debugging_opts.query_dep_graph {
         CguReuseTracker::new()
     } else {
@@ -1344,7 +1299,6 @@ pub fn build_session(
         parse_sess,
         sysroot,
         local_crate_source_file,
-        working_dir,
         one_time_diagnostics: Default::default(),
         crate_types: OnceCell::new(),
         stable_crate_id: OnceCell::new(),
@@ -1366,14 +1320,11 @@ pub fn build_session(
         print_fuel,
         jobserver: jobserver::client(),
         driver_lint_caps,
-        trait_methods_not_found: Lock::new(Default::default()),
         confused_type_with_std_module: Lock::new(Default::default()),
         ctfe_backtrace,
         miri_unleashed_features: Lock::new(Default::default()),
         asm_arch,
         target_features: FxHashSet::default(),
-        used_attrs: Lock::new(MarkedAttrs::new()),
-        if_let_suggestions: Default::default(),
     };
 
     validate_commandline_args_with_session_available(&sess);

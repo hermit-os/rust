@@ -11,6 +11,7 @@ use rustc_middle::ty::{self, RegionVid, Ty, TyCtxt};
 use rustc_span::DUMMY_SP;
 use rustc_trait_selection::traits::query::type_op::{self, TypeOp};
 use std::rc::Rc;
+use type_op::TypeOpOutput;
 
 use crate::borrow_check::{
     nll::ToRegionVid,
@@ -255,7 +256,10 @@ impl UniversalRegionRelationsBuilder<'cx, 'tcx> {
         let constraint_sets: Vec<_> = unnormalized_input_output_tys
             .flat_map(|ty| {
                 debug!("build: input_or_output={:?}", ty);
-                let (ty, constraints1) = self
+                // We add implied bounds from both the unnormalized and normalized ty
+                // See issue #87748
+                let constraints_implied_1 = self.add_implied_bounds(ty);
+                let TypeOpOutput { output: ty, constraints: constraints1, .. } = self
                     .param_env
                     .and(type_op::normalize::Normalize::new(ty))
                     .fully_perform(self.infcx)
@@ -264,11 +268,27 @@ impl UniversalRegionRelationsBuilder<'cx, 'tcx> {
                             .tcx
                             .sess
                             .delay_span_bug(DUMMY_SP, &format!("failed to normalize {:?}", ty));
-                        (self.infcx.tcx.ty_error(), None)
+                        TypeOpOutput {
+                            output: self.infcx.tcx.ty_error(),
+                            constraints: None,
+                            canonicalized_query: None,
+                        }
                     });
-                let constraints2 = self.add_implied_bounds(ty);
+                // Note: we need this in examples like
+                // ```
+                // trait Foo {
+                //   type Bar;
+                //   fn foo(&self) -> &Self::Bar;
+                // }
+                // impl Foo for () {
+                //   type Bar = ();
+                //   fn foo(&self) ->&() {}
+                // }
+                // ```
+                // Both &Self::Bar and &() are WF
+                let constraints_implied_2 = self.add_implied_bounds(ty);
                 normalized_inputs_and_output.push(ty);
-                constraints1.into_iter().chain(constraints2)
+                constraints1.into_iter().chain(constraints_implied_1).chain(constraints_implied_2)
             })
             .collect();
 
@@ -317,7 +337,7 @@ impl UniversalRegionRelationsBuilder<'cx, 'tcx> {
     /// from this local.
     fn add_implied_bounds(&mut self, ty: Ty<'tcx>) -> Option<Rc<QueryRegionConstraints<'tcx>>> {
         debug!("add_implied_bounds(ty={:?})", ty);
-        let (bounds, constraints) = self
+        let TypeOpOutput { output: bounds, constraints, .. } = self
             .param_env
             .and(type_op::implied_outlives_bounds::ImpliedOutlivesBounds { ty })
             .fully_perform(self.infcx)

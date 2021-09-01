@@ -148,7 +148,7 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
         }
 
         if self.tcx.features().staged_api {
-            if let Some(a) = attrs.iter().find(|a| self.tcx.sess.check_name(a, sym::deprecated)) {
+            if let Some(a) = attrs.iter().find(|a| a.has_name(sym::deprecated)) {
                 self.tcx
                     .sess
                     .struct_span_err(a.span, "`#[deprecated]` cannot be used in staged API")
@@ -350,7 +350,6 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
         for attr in attrs {
             let name = attr.name_or_empty();
             if unstable_attrs.contains(&name) {
-                self.tcx.sess.mark_attr_used(attr);
                 struct_span_err!(
                     self.tcx.sess,
                     attr.span,
@@ -539,19 +538,6 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
         );
     }
 
-    fn visit_macro_def(&mut self, md: &'tcx hir::MacroDef<'tcx>) {
-        self.annotate(
-            md.def_id,
-            md.span,
-            None,
-            AnnotationKind::Required,
-            InheritDeprecation::Yes,
-            InheritConstStability::No,
-            InheritStability::No,
-            |_| {},
-        );
-    }
-
     fn visit_generic_param(&mut self, p: &'tcx hir::GenericParam<'tcx>) {
         let kind = match &p.kind {
             // Allow stability attributes on default generic arguments.
@@ -663,11 +649,6 @@ impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
         self.check_missing_stability(i.def_id, i.span);
         intravisit::walk_foreign_item(self, i);
     }
-
-    fn visit_macro_def(&mut self, md: &'tcx hir::MacroDef<'tcx>) {
-        self.check_missing_stability(md.def_id, md.span);
-    }
-
     // Note that we don't need to `check_missing_stability` for default generic parameters,
     // as we assume that any default generic parameters without attributes are automatically
     // stable (assuming they have not inherited instability from their parent).

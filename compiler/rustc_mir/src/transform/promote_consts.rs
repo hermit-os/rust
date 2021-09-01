@@ -719,7 +719,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
         let data = &mut self.promoted[last];
         data.statements.push(Statement {
             source_info: SourceInfo::outermost(span),
-            kind: StatementKind::Assign(box (Place::from(dest), rvalue)),
+            kind: StatementKind::Assign(Box::new((Place::from(dest), rvalue))),
         });
     }
 
@@ -774,11 +774,11 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                     if self.keep_original {
                         rhs.clone()
                     } else {
-                        let unit = Rvalue::Use(Operand::Constant(box Constant {
+                        let unit = Rvalue::Use(Operand::Constant(Box::new(Constant {
                             span: statement.source_info.span,
                             user_ty: None,
                             literal: ty::Const::zero_sized(self.tcx, self.tcx.types.unit).into(),
-                        }));
+                        })));
                         mem::replace(rhs, unit)
                     },
                     statement.source_info,
@@ -859,13 +859,17 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                             ty,
                             val: ty::ConstKind::Unevaluated(ty::Unevaluated {
                                 def,
-                                substs: InternalSubsts::for_item(tcx, def.did, |param, _| {
-                                    if let ty::GenericParamDefKind::Lifetime = param.kind {
-                                        tcx.lifetimes.re_erased.into()
-                                    } else {
-                                        tcx.mk_param_from_def(param)
-                                    }
-                                }),
+                                substs_: Some(InternalSubsts::for_item(
+                                    tcx,
+                                    def.did,
+                                    |param, _| {
+                                        if let ty::GenericParamDefKind::Lifetime = param.kind {
+                                            tcx.lifetimes.re_erased.into()
+                                        } else {
+                                            tcx.mk_param_from_def(param)
+                                        }
+                                    },
+                                )),
                                 promoted: Some(promoted_id),
                             }),
                         })
@@ -988,6 +992,7 @@ pub fn promote_candidates<'tcx>(
         scope.parent_scope = None;
 
         let promoted = Body::new(
+            tcx,
             body.source, // `promoted` gets filled in below
             IndexVec::new(),
             IndexVec::from_elem_n(scope, 1),

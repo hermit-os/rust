@@ -12,7 +12,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 #[derive(Copy, Clone, Debug)]
-crate struct RustcFacts;
+pub struct RustcFacts;
 
 impl polonius_engine::FactTypes for RustcFacts {
     type Origin = RegionVid;
@@ -22,7 +22,7 @@ impl polonius_engine::FactTypes for RustcFacts {
     type Path = MovePathIndex;
 }
 
-crate type AllFacts = PoloniusFacts<RustcFacts>;
+pub type AllFacts = PoloniusFacts<RustcFacts>;
 
 crate trait AllFactsExt {
     /// Returns `true` if there is a need to gather `AllFacts` given the
@@ -64,13 +64,12 @@ impl AllFactsExt for AllFacts {
         }
         write_facts_to_path! {
             wr.write_facts_to_path(self.[
-                borrow_region,
+                loan_issued_at,
                 universal_region,
-                placeholder,
                 cfg_edge,
-                killed,
-                outlives,
-                invalidates,
+                loan_killed_at,
+                subset_base,
+                loan_invalidated_at,
                 var_used_at,
                 var_defined_at,
                 var_dropped_at,
@@ -81,7 +80,8 @@ impl AllFactsExt for AllFacts {
                 path_assigned_at_base,
                 path_moved_at_base,
                 path_accessed_at_base,
-                known_subset,
+                known_placeholder_subset,
+                placeholder,
             ])
         }
         Ok(())

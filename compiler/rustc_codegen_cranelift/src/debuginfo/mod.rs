@@ -66,7 +66,7 @@ impl<'tcx> DebugContext<'tcx> {
             rustc_interface::util::version_str().unwrap_or("unknown version"),
             cranelift_codegen::VERSION,
         );
-        let comp_dir = tcx.sess.working_dir.to_string_lossy(false).into_owned();
+        let comp_dir = tcx.sess.opts.working_dir.to_string_lossy(false).into_owned();
         let (name, file_info) = match tcx.sess.local_crate_source_file.clone() {
             Some(path) => {
                 let name = path.to_string_lossy().into_owned();
@@ -160,12 +160,10 @@ impl<'tcx> DebugContext<'tcx> {
 
                 for (field_idx, field_def) in variant.fields.iter().enumerate() {
                     let field_offset = layout.fields.offset(field_idx);
-                    let field_layout = layout
-                        .field(
-                            &layout::LayoutCx { tcx: self.tcx, param_env: ParamEnv::reveal_all() },
-                            field_idx,
-                        )
-                        .unwrap();
+                    let field_layout = layout.field(
+                        &layout::LayoutCx { tcx: self.tcx, param_env: ParamEnv::reveal_all() },
+                        field_idx,
+                    );
 
                     let field_type = self.dwarf_ty(field_layout.ty);
 

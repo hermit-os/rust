@@ -91,7 +91,6 @@ impl Clean<Item> for doctree::Module<'_> {
         items.extend(self.foreigns.iter().map(|x| x.clean(cx)));
         items.extend(self.mods.iter().map(|x| x.clean(cx)));
         items.extend(self.items.iter().map(|x| x.clean(cx)).flatten());
-        items.extend(self.macros.iter().map(|x| x.clean(cx)));
 
         // determine if we should display the inner contents or
         // the outer `mod` item for the source code.
@@ -325,13 +324,14 @@ impl<'a> Clean<Option<WherePredicate>> for ty::Predicate<'a> {
     fn clean(&self, cx: &mut DocContext<'_>) -> Option<WherePredicate> {
         let bound_predicate = self.kind();
         match bound_predicate.skip_binder() {
-            ty::PredicateKind::Trait(pred, _) => Some(bound_predicate.rebind(pred).clean(cx)),
+            ty::PredicateKind::Trait(pred) => Some(bound_predicate.rebind(pred).clean(cx)),
             ty::PredicateKind::RegionOutlives(pred) => pred.clean(cx),
             ty::PredicateKind::TypeOutlives(pred) => pred.clean(cx),
             ty::PredicateKind::Projection(pred) => Some(pred.clean(cx)),
             ty::PredicateKind::ConstEvaluatable(..) => None,
 
             ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Coerce(..)
             | ty::PredicateKind::WellFormed(..)
             | ty::PredicateKind::ObjectSafe(..)
             | ty::PredicateKind::ClosureKind(..)
@@ -403,8 +403,8 @@ impl<'tcx> Clean<Type> for ty::ProjectionTy<'tcx> {
         Type::QPath {
             name: cx.tcx.associated_item(self.item_def_id).ident.name,
             self_def_id: self_type.def_id(),
-            self_type: box self_type,
-            trait_: box trait_,
+            self_type: Box::new(self_type),
+            trait_: Box::new(trait_),
         }
     }
 }
@@ -637,7 +637,7 @@ impl<'a, 'tcx> Clean<Generics> for (&'a ty::Generics, ty::GenericPredicates<'tcx
                 let param_idx = (|| {
                     let bound_p = p.kind();
                     match bound_p.skip_binder() {
-                        ty::PredicateKind::Trait(pred, _constness) => {
+                        ty::PredicateKind::Trait(pred) => {
                             if let ty::Param(param) = pred.self_ty().kind() {
                                 return Some(param.index);
                             }
@@ -1305,8 +1305,8 @@ fn clean_qpath(hir_ty: &hir::Ty<'_>, cx: &mut DocContext<'_>) -> Type {
             Type::QPath {
                 name: p.segments.last().expect("segments were empty").ident.name,
                 self_def_id: Some(DefId::local(qself.hir_id.owner.local_def_index)),
-                self_type: box qself.clean(cx),
-                trait_: box resolve_type(cx, trait_path, hir_id),
+                self_type: Box::new(qself.clean(cx)),
+                trait_: Box::new(resolve_type(cx, trait_path, hir_id)),
             }
         }
         hir::QPath::TypeRelative(ref qself, ref segment) => {
@@ -1320,8 +1320,8 @@ fn clean_qpath(hir_ty: &hir::Ty<'_>, cx: &mut DocContext<'_>) -> Type {
             Type::QPath {
                 name: segment.ident.name,
                 self_def_id: res.opt_def_id(),
-                self_type: box qself.clean(cx),
-                trait_: box resolve_type(cx, trait_path, hir_id),
+                self_type: Box::new(qself.clean(cx)),
+                trait_: Box::new(resolve_type(cx, trait_path, hir_id)),
             }
         }
         hir::QPath::LangItem(..) => bug!("clean: requiring documentation of lang item"),
@@ -1334,7 +1334,7 @@ impl Clean<Type> for hir::Ty<'_> {
 
         match self.kind {
             TyKind::Never => Never,
-            TyKind::Ptr(ref m) => RawPointer(m.mutbl, box m.ty.clean(cx)),
+            TyKind::Ptr(ref m) => RawPointer(m.mutbl, Box::new(m.ty.clean(cx))),
             TyKind::Rptr(ref l, ref m) => {
                 // There are two times a `Fresh` lifetime can be created:
                 // 1. For `&'_ x`, written by the user. This corresponds to `lower_lifetime` in `rustc_ast_lowering`.
@@ -1346,9 +1346,9 @@ impl Clean<Type> for hir::Ty<'_> {
                 let elided =
                     l.is_elided() || matches!(l.name, LifetimeName::Param(ParamName::Fresh(_)));
                 let lifetime = if elided { None } else { Some(l.clean(cx)) };
-                BorrowedRef { lifetime, mutability: m.mutbl, type_: box m.ty.clean(cx) }
+                BorrowedRef { lifetime, mutability: m.mutbl, type_: Box::new(m.ty.clean(cx)) }
             }
-            TyKind::Slice(ref ty) => Slice(box ty.clean(cx)),
+            TyKind::Slice(ref ty) => Slice(Box::new(ty.clean(cx))),
             TyKind::Array(ref ty, ref length) => {
                 let def_id = cx.tcx.hir().local_def_id(length.hir_id);
                 // NOTE(min_const_generics): We can't use `const_eval_poly` for constants
@@ -1361,7 +1361,7 @@ impl Clean<Type> for hir::Ty<'_> {
                 let ct = ty::Const::from_anon_const(cx.tcx, def_id);
                 let param_env = cx.tcx.param_env(def_id);
                 let length = print_const(cx, ct.eval(cx.tcx, param_env));
-                Array(box ty.clean(cx), length)
+                Array(Box::new(ty.clean(cx)), length)
             }
             TyKind::Tup(ref tys) => Tuple(tys.clean(cx)),
             TyKind::OpaqueDef(item_id, _) => {
@@ -1378,7 +1378,7 @@ impl Clean<Type> for hir::Ty<'_> {
                 let lifetime = if !lifetime.is_elided() { Some(lifetime.clean(cx)) } else { None };
                 DynTrait(bounds, lifetime)
             }
-            TyKind::BareFn(ref barefn) => BareFunction(box barefn.clean(cx)),
+            TyKind::BareFn(ref barefn) => BareFunction(Box::new(barefn.clean(cx))),
             TyKind::Infer | TyKind::Err => Infer,
             TyKind::Typeof(..) => panic!("unimplemented type {:?}", self.kind),
         }
@@ -1428,27 +1428,29 @@ impl<'tcx> Clean<Type> for Ty<'tcx> {
             ty::Uint(uint_ty) => Primitive(uint_ty.into()),
             ty::Float(float_ty) => Primitive(float_ty.into()),
             ty::Str => Primitive(PrimitiveType::Str),
-            ty::Slice(ty) => Slice(box ty.clean(cx)),
+            ty::Slice(ty) => Slice(Box::new(ty.clean(cx))),
             ty::Array(ty, n) => {
                 let mut n = cx.tcx.lift(n).expect("array lift failed");
                 n = n.eval(cx.tcx, ty::ParamEnv::reveal_all());
                 let n = print_const(cx, n);
-                Array(box ty.clean(cx), n)
+                Array(Box::new(ty.clean(cx)), n)
             }
-            ty::RawPtr(mt) => RawPointer(mt.mutbl, box mt.ty.clean(cx)),
-            ty::Ref(r, ty, mutbl) => {
-                BorrowedRef { lifetime: r.clean(cx), mutability: mutbl, type_: box ty.clean(cx) }
-            }
+            ty::RawPtr(mt) => RawPointer(mt.mutbl, Box::new(mt.ty.clean(cx))),
+            ty::Ref(r, ty, mutbl) => BorrowedRef {
+                lifetime: r.clean(cx),
+                mutability: mutbl,
+                type_: Box::new(ty.clean(cx)),
+            },
             ty::FnDef(..) | ty::FnPtr(_) => {
                 let ty = cx.tcx.lift(*self).expect("FnPtr lift failed");
                 let sig = ty.fn_sig(cx.tcx);
                 let def_id = DefId::local(CRATE_DEF_INDEX);
-                BareFunction(box BareFunctionDecl {
+                BareFunction(Box::new(BareFunctionDecl {
                     unsafety: sig.unsafety(),
                     generic_params: Vec::new(),
                     decl: (def_id, sig).clean(cx),
                     abi: sig.abi(),
-                })
+                }))
             }
             ty::Adt(def, substs) => {
                 let did = def.did;
@@ -1555,9 +1557,7 @@ impl<'tcx> Clean<Type> for Ty<'tcx> {
                     .filter_map(|bound| {
                         let bound_predicate = bound.kind();
                         let trait_ref = match bound_predicate.skip_binder() {
-                            ty::PredicateKind::Trait(tr, _constness) => {
-                                bound_predicate.rebind(tr.trait_ref)
-                            }
+                            ty::PredicateKind::Trait(tr) => bound_predicate.rebind(tr.trait_ref),
                             ty::PredicateKind::TypeOutlives(ty::OutlivesPredicate(_ty, reg)) => {
                                 if let Some(r) = reg.clean(cx) {
                                     regions.push(GenericBound::Outlives(r));
@@ -1702,12 +1702,28 @@ impl Clean<VariantStruct> for rustc_hir::VariantData<'_> {
     }
 }
 
+impl Clean<Vec<Item>> for hir::VariantData<'_> {
+    fn clean(&self, cx: &mut DocContext<'_>) -> Vec<Item> {
+        self.fields().iter().map(|x| x.clean(cx)).collect()
+    }
+}
+
 impl Clean<Item> for ty::VariantDef {
     fn clean(&self, cx: &mut DocContext<'_>) -> Item {
         let kind = match self.ctor_kind {
             CtorKind::Const => Variant::CLike,
             CtorKind::Fn => Variant::Tuple(
-                self.fields.iter().map(|f| cx.tcx.type_of(f.did).clean(cx)).collect(),
+                self.fields
+                    .iter()
+                    .map(|field| {
+                        let name = Some(field.ident.name);
+                        let kind = StructFieldItem(cx.tcx.type_of(field.did).clean(cx));
+                        let what_rustc_thinks =
+                            Item::from_def_id_and_parts(field.did, name, kind, cx);
+                        // don't show `pub` for fields, which are always public
+                        Item { visibility: Visibility::Inherited, ..what_rustc_thinks }
+                    })
+                    .collect(),
             ),
             CtorKind::Fictive => Variant::Struct(VariantStruct {
                 struct_type: CtorKind::Fictive,
@@ -1737,13 +1753,7 @@ impl Clean<Variant> for hir::VariantData<'_> {
     fn clean(&self, cx: &mut DocContext<'_>) -> Variant {
         match self {
             hir::VariantData::Struct(..) => Variant::Struct(self.clean(cx)),
-            // Important note here: `Variant::Tuple` is used on tuple structs which are not in an
-            // enum (so where converting from `ty::VariantDef`). In case we are in an enum, the kind
-            // is provided by the `Variant` wrapper directly, and since we need the fields' name
-            // (even for a tuple struct variant!), it's simpler to just store it as a
-            // `Variant::Struct` instead of a `Variant::Tuple` (otherwise it would force us to make
-            // a lot of changes when rendering them to generate the name as well).
-            hir::VariantData::Tuple(..) => Variant::Struct(self.clean(cx)),
+            hir::VariantData::Tuple(..) => Variant::Tuple(self.clean(cx)),
             hir::VariantData::Unit(..) => Variant::CLike,
         }
     }
@@ -1860,6 +1870,10 @@ impl Clean<Vec<Item>> for (&hir::Item<'_>, Option<Symbol>) {
                 ItemKind::Fn(ref sig, ref generics, body_id) => {
                     clean_fn_or_proc_macro(item, sig, generics, body_id, &mut name, cx)
                 }
+                ItemKind::Macro(ref macro_def) => MacroItem(Macro {
+                    source: display_macro_source(cx, name, &macro_def, def_id, &item.vis),
+                    imported_from: None,
+                }),
                 ItemKind::Trait(is_auto, unsafety, ref generics, ref bounds, ref item_ids) => {
                     let items = item_ids
                         .iter()
@@ -1990,10 +2004,10 @@ fn clean_extern_crate(
     // FIXME: using `from_def_id_and_kind` breaks `rustdoc/masked` for some reason
     vec![Item {
         name: Some(name),
-        attrs: box attrs.clean(cx),
+        attrs: Box::new(attrs.clean(cx)),
         def_id: crate_def_id.into(),
         visibility: krate.vis.clean(cx),
-        kind: box ExternCrateItem { src: orig_name },
+        kind: Box::new(ExternCrateItem { src: orig_name }),
         cfg: attrs.cfg(cx.sess()),
     }]
 }
@@ -2134,24 +2148,6 @@ impl Clean<Item> for (&hir::ForeignItem<'_>, Option<Symbol>) {
                 cx,
             )
         })
-    }
-}
-
-impl Clean<Item> for (&hir::MacroDef<'_>, Option<Symbol>) {
-    fn clean(&self, cx: &mut DocContext<'_>) -> Item {
-        let (item, renamed) = self;
-        let name = renamed.unwrap_or(item.ident.name);
-        let def_id = item.def_id.to_def_id();
-
-        Item::from_hir_id_and_parts(
-            item.hir_id(),
-            Some(name),
-            MacroItem(Macro {
-                source: display_macro_source(cx, name, &item.ast, def_id, &item.vis),
-                imported_from: None,
-            }),
-            cx,
-        )
     }
 }
 

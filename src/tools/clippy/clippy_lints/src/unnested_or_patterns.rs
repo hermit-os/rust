@@ -35,8 +35,6 @@ declare_clippy_lint! {
     /// ```
     /// Use instead:
     /// ```rust
-    /// #![feature(or_patterns)]
-    ///
     /// fn main() {
     ///     if let Some(0 | 2) = Some(0) {}
     /// }
@@ -69,7 +67,7 @@ impl EarlyLintPass for UnnestedOrPatterns {
 
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
         if meets_msrv(self.msrv.as_ref(), &msrvs::OR_PATTERNS) {
-            if let ast::ExprKind::Let(pat, _) = &e.kind {
+            if let ast::ExprKind::Let(pat, _, _) = &e.kind {
                 lint_unnested_or_patterns(cx, pat);
             }
         }

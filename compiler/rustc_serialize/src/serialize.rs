@@ -644,7 +644,7 @@ impl<D: Decoder, T: Decodable<D> + Copy> Decodable<D> for Cell<T> {
 }
 
 // FIXME: #15036
-// Should use `try_borrow`, returning a
+// Should use `try_borrow`, returning an
 // `encoder.error("attempting to Encode borrowed RefCell")`
 // from `encode` when `try_borrow` returns `None`.
 
@@ -679,6 +679,6 @@ impl<S: Encoder, T: ?Sized + Encodable<S>> Encodable<S> for Box<T> {
 }
 impl<D: Decoder, T: Decodable<D>> Decodable<D> for Box<T> {
     fn decode(d: &mut D) -> Result<Box<T>, D::Error> {
-        Ok(box Decodable::decode(d)?)
+        Ok(Box::new(Decodable::decode(d)?))
     }
 }

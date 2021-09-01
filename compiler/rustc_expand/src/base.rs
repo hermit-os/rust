@@ -354,6 +354,7 @@ pub trait MacResult {
     fn make_expr(self: Box<Self>) -> Option<P<ast::Expr>> {
         None
     }
+
     /// Creates zero or more items.
     fn make_items(self: Box<Self>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
         None
@@ -653,10 +654,7 @@ pub enum SyntaxExtensionKind {
     /// A trivial attribute "macro" that does nothing,
     /// only keeps the attribute and marks it as inert,
     /// thus making it ineligible for further expansion.
-    NonMacroAttr {
-        /// Suppresses the `unused_attributes` lint for this attribute.
-        mark_used: bool,
-    },
+    NonMacroAttr,
 
     /// A token-based derive macro.
     Derive(
@@ -705,7 +703,7 @@ impl SyntaxExtension {
             SyntaxExtensionKind::Bang(..) | SyntaxExtensionKind::LegacyBang(..) => MacroKind::Bang,
             SyntaxExtensionKind::Attr(..)
             | SyntaxExtensionKind::LegacyAttr(..)
-            | SyntaxExtensionKind::NonMacroAttr { .. } => MacroKind::Attr,
+            | SyntaxExtensionKind::NonMacroAttr => MacroKind::Attr,
             SyntaxExtensionKind::Derive(..) | SyntaxExtensionKind::LegacyDerive(..) => {
                 MacroKind::Derive
             }
@@ -811,8 +809,8 @@ impl SyntaxExtension {
         SyntaxExtension::default(SyntaxExtensionKind::Derive(Box::new(expander)), edition)
     }
 
-    pub fn non_macro_attr(mark_used: bool, edition: Edition) -> SyntaxExtension {
-        SyntaxExtension::default(SyntaxExtensionKind::NonMacroAttr { mark_used }, edition)
+    pub fn non_macro_attr(edition: Edition) -> SyntaxExtension {
+        SyntaxExtension::default(SyntaxExtensionKind::NonMacroAttr, edition)
     }
 
     pub fn expn_data(

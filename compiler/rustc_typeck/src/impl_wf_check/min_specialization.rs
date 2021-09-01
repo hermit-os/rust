@@ -68,7 +68,6 @@
 use crate::constrained_generic_params as cgp;
 
 use rustc_data_structures::fx::FxHashSet;
-use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::infer::{InferCtxt, RegionckMode, TyCtxtInferExt};
@@ -207,15 +206,15 @@ fn unconstrained_parent_impl_substs<'tcx>(
                 continue;
             }
 
-            unconstrained_parameters.extend(cgp::parameters_for(&projection_ty, true));
+            unconstrained_parameters.extend(cgp::parameters_for(tcx, &projection_ty, true));
 
-            for param in cgp::parameters_for(&projected_ty, false) {
+            for param in cgp::parameters_for(tcx, &projected_ty, false) {
                 if !unconstrained_parameters.contains(&param) {
                     constrained_params.insert(param.0);
                 }
             }
 
-            unconstrained_parameters.extend(cgp::parameters_for(&projected_ty, true));
+            unconstrained_parameters.extend(cgp::parameters_for(tcx, &projected_ty, true));
         }
     }
 
@@ -249,7 +248,7 @@ fn check_duplicate_params<'tcx>(
     parent_substs: &Vec<GenericArg<'tcx>>,
     span: Span,
 ) {
-    let mut base_params = cgp::parameters_for(parent_substs, true);
+    let mut base_params = cgp::parameters_for(tcx, parent_substs, true);
     base_params.sort_by_key(|param| param.0);
     if let (_, [duplicate, ..]) = base_params.partition_dedup() {
         let param = impl1_substs[duplicate.0 as usize];
@@ -363,10 +362,13 @@ fn check_specialization_on<'tcx>(tcx: TyCtxt<'tcx>, predicate: ty::Predicate<'tc
     match predicate.kind().skip_binder() {
         // Global predicates are either always true or always false, so we
         // are fine to specialize on.
-        _ if predicate.is_global() => (),
+        _ if predicate.is_global(tcx) => (),
         // We allow specializing on explicitly marked traits with no associated
         // items.
-        ty::PredicateKind::Trait(pred, hir::Constness::NotConst) => {
+        ty::PredicateKind::Trait(ty::TraitPredicate {
+            trait_ref,
+            constness: ty::BoundConstness::NotConst,
+        }) => {
             if !matches!(
                 trait_predicate_kind(tcx, predicate),
                 Some(TraitSpecializationKind::Marker)
@@ -376,7 +378,7 @@ fn check_specialization_on<'tcx>(tcx: TyCtxt<'tcx>, predicate: ty::Predicate<'tc
                         span,
                         &format!(
                             "cannot specialize on trait `{}`",
-                            tcx.def_path_str(pred.def_id()),
+                            tcx.def_path_str(trait_ref.def_id),
                         ),
                     )
                     .emit()
@@ -394,15 +396,17 @@ fn trait_predicate_kind<'tcx>(
     predicate: ty::Predicate<'tcx>,
 ) -> Option<TraitSpecializationKind> {
     match predicate.kind().skip_binder() {
-        ty::PredicateKind::Trait(pred, hir::Constness::NotConst) => {
-            Some(tcx.trait_def(pred.def_id()).specialization_kind)
-        }
-        ty::PredicateKind::Trait(_, hir::Constness::Const)
+        ty::PredicateKind::Trait(ty::TraitPredicate {
+            trait_ref,
+            constness: ty::BoundConstness::NotConst,
+        }) => Some(tcx.trait_def(trait_ref.def_id).specialization_kind),
+        ty::PredicateKind::Trait(_)
         | ty::PredicateKind::RegionOutlives(_)
         | ty::PredicateKind::TypeOutlives(_)
         | ty::PredicateKind::Projection(_)
         | ty::PredicateKind::WellFormed(_)
         | ty::PredicateKind::Subtype(_)
+        | ty::PredicateKind::Coerce(_)
         | ty::PredicateKind::ObjectSafe(_)
         | ty::PredicateKind::ClosureKind(..)
         | ty::PredicateKind::ConstEvaluatable(..)

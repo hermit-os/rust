@@ -77,7 +77,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     ///     ?0: Iterator<Item = ?1>
     ///     ?1: Debug
     ///
-    /// Moreover, it returns a `OpaqueTypeMap` that would map `?0` to
+    /// Moreover, it returns an `OpaqueTypeMap` that would map `?0` to
     /// info about the `impl Iterator<..>` type and `?1` to info about
     /// the `impl Debug` type.
     ///
@@ -352,6 +352,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         if !required_region_bounds.is_empty() {
             for required_region in required_region_bounds {
                 concrete_ty.visit_with(&mut ConstrainOpaqueTypeRegionVisitor {
+                    tcx,
                     op: |r| self.sub_regions(infer::CallReturn(span), required_region, r),
                 });
             }
@@ -427,6 +428,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             }
         }
         concrete_ty.visit_with(&mut ConstrainOpaqueTypeRegionVisitor {
+            tcx,
             op: |r| self.sub_regions(infer::CallReturn(span), least_region, r),
         });
     }
@@ -461,6 +463,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         );
 
         concrete_ty.visit_with(&mut ConstrainOpaqueTypeRegionVisitor {
+            tcx: self.tcx,
             op: |r| {
                 self.member_constraint(
                     opaque_type_key.def_id,
@@ -546,14 +549,19 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 //
 // We ignore any type parameters because impl trait values are assumed to
 // capture all the in-scope type parameters.
-struct ConstrainOpaqueTypeRegionVisitor<OP> {
+struct ConstrainOpaqueTypeRegionVisitor<'tcx, OP> {
+    tcx: TyCtxt<'tcx>,
     op: OP,
 }
 
-impl<'tcx, OP> TypeVisitor<'tcx> for ConstrainOpaqueTypeRegionVisitor<OP>
+impl<'tcx, OP> TypeVisitor<'tcx> for ConstrainOpaqueTypeRegionVisitor<'tcx, OP>
 where
     OP: FnMut(ty::Region<'tcx>),
 {
+    fn tcx_for_anon_const_substs(&self) -> Option<TyCtxt<'tcx>> {
+        Some(self.tcx)
+    }
+
     fn visit_binder<T: TypeFoldable<'tcx>>(
         &mut self,
         t: &ty::Binder<'tcx, T>,
@@ -575,7 +583,7 @@ where
 
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<Self::BreakTy> {
         // We're only interested in types involving regions
-        if !ty.flags().intersects(ty::TypeFlags::HAS_FREE_REGIONS) {
+        if !ty.flags().intersects(ty::TypeFlags::HAS_POTENTIAL_FREE_REGIONS) {
             return ControlFlow::CONTINUE;
         }
 
@@ -886,7 +894,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                     // }
                     // ```
                     //
-                    // Here, the return type of `foo` references a
+                    // Here, the return type of `foo` references an
                     // `Opaque` indeed, but not one whose value is
                     // presently being inferred. You can get into a
                     // similar situation with closure return types
@@ -1119,6 +1127,7 @@ crate fn required_region_bounds(
                 ty::PredicateKind::Projection(..)
                 | ty::PredicateKind::Trait(..)
                 | ty::PredicateKind::Subtype(..)
+                | ty::PredicateKind::Coerce(..)
                 | ty::PredicateKind::WellFormed(..)
                 | ty::PredicateKind::ObjectSafe(..)
                 | ty::PredicateKind::ClosureKind(..)

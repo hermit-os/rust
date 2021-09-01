@@ -1,7 +1,6 @@
 use clippy_utils::diagnostics::{span_lint, span_lint_and_then};
 use rustc_ast::ast::{
-    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, FnKind, Item, ItemKind, Local, Pat,
-    PatKind,
+    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, FnKind, Item, ItemKind, Local, Pat, PatKind,
 };
 use rustc_ast::visit::{walk_block, walk_expr, walk_pat, Visitor};
 use rustc_lint::{EarlyContext, EarlyLintPass};
@@ -127,6 +126,7 @@ const ALLOWED_TO_BE_SIMILAR: &[&[&str]] = &[
     &["qpath", "path"],
     &["lit", "lint"],
     &["wparam", "lparam"],
+    &["iter", "item"],
 ];
 
 struct SimilarNamesNameVisitor<'a, 'tcx, 'b>(&'b mut SimilarNamesLocalVisitor<'a, 'tcx>);
@@ -316,8 +316,11 @@ impl<'a, 'b> SimilarNamesLocalVisitor<'a, 'b> {
 
 impl<'a, 'tcx> Visitor<'tcx> for SimilarNamesLocalVisitor<'a, 'tcx> {
     fn visit_local(&mut self, local: &'tcx Local) {
-        if let Some(ref init) = local.init {
-            self.apply(|this| walk_expr(this, &**init));
+        if let Some((init, els)) = &local.kind.init_else_opt() {
+            self.apply(|this| walk_expr(this, init));
+            if let Some(els) = els {
+                self.apply(|this| walk_block(this, els));
+            }
         }
         // add the pattern after the expression because the bindings aren't available
         // yet in the init

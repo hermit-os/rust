@@ -114,9 +114,24 @@ rustc_queries! {
         desc { |tcx| "compute const default for a given parameter `{}`", tcx.def_path_str(param)  }
     }
 
+    query default_anon_const_substs(key: DefId) -> SubstsRef<'tcx> {
+        desc { |tcx| "computing the default generic arguments for `{}`", tcx.def_path_str(key) }
+    }
+
     /// Records the type of every item.
     query type_of(key: DefId) -> Ty<'tcx> {
-        desc { |tcx| "computing type of `{}`", tcx.def_path_str(key) }
+        desc { |tcx|
+            "{action} `{path}`",
+            action = {
+                use rustc_hir::def::DefKind;
+                match tcx.def_kind(key) {
+                    DefKind::TyAlias => "expanding type alias",
+                    DefKind::TraitAlias => "expanding trait alias",
+                    _ => "computing type of",
+                }
+            },
+            path = tcx.def_path_str(key),
+        }
         cache_on_disk_if { key.is_local() }
     }
 
@@ -299,12 +314,11 @@ rustc_queries! {
     }
 
     query try_unify_abstract_consts(key: (
-        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
-        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>)
+        ty::Unevaluated<'tcx, ()>, ty::Unevaluated<'tcx, ()>
     )) -> bool {
         desc {
             |tcx| "trying to unify the generic constants {} and {}",
-            tcx.def_path_str(key.0.0.did), tcx.def_path_str(key.1.0.did)
+            tcx.def_path_str(key.0.def.did), tcx.def_path_str(key.1.def.did)
         }
     }
 
@@ -339,6 +353,16 @@ rustc_queries! {
             |tcx| "processing {}`{}`",
             if key.const_param_did.is_some() { "the const argument " } else { "" },
             tcx.def_path_str(key.did.to_def_id()),
+        }
+    }
+
+    query symbols_for_closure_captures(
+        key: (LocalDefId, DefId)
+    ) -> Vec<rustc_span::Symbol> {
+        desc {
+            |tcx| "symbols for captures of closure `{}` in `{}`",
+            tcx.def_path_str(key.1),
+            tcx.def_path_str(key.0.to_def_id())
         }
     }
 
@@ -638,7 +662,7 @@ rustc_queries! {
         }
     }
 
-    /// HACK: when evaluated, this reports a "unsafe derive on repr(packed)" error.
+    /// HACK: when evaluated, this reports an "unsafe derive on repr(packed)" error.
     ///
     /// Unsafety checking is executed for each method separately, but we only want
     /// to emit this error once per derive. As there are some impls with multiple
@@ -977,9 +1001,9 @@ rustc_queries! {
         desc { |tcx| "finding all vtable entries for trait {}", tcx.def_path_str(key.def_id()) }
     }
 
-    query vtable_trait_upcasting_coercion_new_vptr_slot(key: (ty::PolyTraitRef<'tcx>, ty::PolyTraitRef<'tcx>)) -> Option<usize> {
-        desc { |tcx| "finding the slot within vtable for trait {} vtable ptr during trait upcasting coercion from {} vtable",
-            tcx.def_path_str(key.1.def_id()), tcx.def_path_str(key.0.def_id()) }
+    query vtable_trait_upcasting_coercion_new_vptr_slot(key: (ty::Ty<'tcx>, ty::Ty<'tcx>)) -> Option<usize> {
+        desc { |tcx| "finding the slot within vtable for trait object {} vtable ptr during trait upcasting coercion from {} vtable",
+            key.1, key.0 }
     }
 
     query codegen_fulfill_obligation(
@@ -1090,10 +1114,12 @@ rustc_queries! {
         cache_on_disk_if { false }
     }
 
-    query layout_raw(
-        env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>
-    ) -> Result<&'tcx rustc_target::abi::Layout, ty::layout::LayoutError<'tcx>> {
-        desc { "computing layout of `{}`", env.value }
+    /// Computes the layout of a type. Note that this implicitly
+    /// executes in "reveal all" mode, and will normalize the input type.
+    query layout_of(
+        key: ty::ParamEnvAnd<'tcx, Ty<'tcx>>
+    ) -> Result<ty::layout::TyAndLayout<'tcx>, ty::layout::LayoutError<'tcx>> {
+        desc { "computing layout of `{}`", key.value }
     }
 
     query dylib_dependency_formats(_: CrateNum)
@@ -1723,7 +1749,7 @@ rustc_queries! {
     }
 
     /// Performs an HIR-based well-formed check on the item with the given `HirId`. If
-    /// we get an `Umimplemented` error that matches the provided `Predicate`, return
+    /// we get an `Unimplemented` error that matches the provided `Predicate`, return
     /// the cause of the newly created obligation.
     ///
     /// This is only used by error-reporting code to get a better cause (in particular, a better

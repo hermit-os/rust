@@ -62,7 +62,7 @@ crate struct CrateMetadata {
     // --- Some data pre-decoded from the metadata blob, usually for performance ---
     /// Properties of the whole crate.
     /// NOTE(eddyb) we pass `'static` to a `'tcx` parameter because this
-    /// lifetime is only used behind `Lazy`, and therefore acts like an
+    /// lifetime is only used behind `Lazy`, and therefore acts like a
     /// universal (`for<'tcx>`), that is paired up with whichever `TyCtxt`
     /// is being used to decode those values.
     root: CrateRoot<'static>,
@@ -1100,7 +1100,13 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                     let vis = self.get_visibility(child_index);
                     let def_id = self.local_def_id(child_index);
                     let res = Res::Def(kind, def_id);
-                    callback(Export { res, ident, vis, span });
+
+                    // FIXME: Macros are currently encoded twice, once as items and once as
+                    // reexports. We ignore the items here and only use the reexports.
+                    if !matches!(kind, DefKind::Macro(..)) {
+                        callback(Export { res, ident, vis, span });
+                    }
+
                     // For non-re-export structs and variants add their constructors to children.
                     // Re-export lists automatically contain constructors when necessary.
                     match kind {

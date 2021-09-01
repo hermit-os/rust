@@ -29,6 +29,7 @@ use std::slice;
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     pub(in super::super) fn check_casts(&self) {
         let mut deferred_cast_checks = self.deferred_cast_checks.borrow_mut();
+        debug!("FnCtxt::check_casts: {} deferred checks", deferred_cast_checks.len());
         for cast in deferred_cast_checks.drain(..) {
             cast.check(self);
         }
@@ -923,7 +924,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 continue;
             }
 
-            if let ty::PredicateKind::Trait(predicate, _) =
+            if let ty::PredicateKind::Trait(predicate) =
                 error.obligation.predicate.kind().skip_binder()
             {
                 // Collect the argument position for all arguments that could have caused this
@@ -936,7 +937,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         let ty = self.resolve_vars_if_possible(ty);
                         // We walk the argument type because the argument's type could have
                         // been `Option<T>`, but the `FulfillmentError` references `T`.
-                        if ty.walk().any(|arg| arg == predicate.self_ty().into()) {
+                        if ty.walk(self.tcx).any(|arg| arg == predicate.self_ty().into()) {
                             Some(i)
                         } else {
                             None
@@ -974,7 +975,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let hir::ExprKind::Path(qpath) = &path.kind {
                 if let hir::QPath::Resolved(_, path) = &qpath {
                     for error in errors {
-                        if let ty::PredicateKind::Trait(predicate, _) =
+                        if let ty::PredicateKind::Trait(predicate) =
                             error.obligation.predicate.kind().skip_binder()
                         {
                             // If any of the type arguments in this path segment caused the

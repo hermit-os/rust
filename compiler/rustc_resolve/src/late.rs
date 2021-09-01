@@ -454,7 +454,7 @@ impl<'a: 'ast, 'ast> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast> {
             _ => Some((
                 local.pat.span,
                 local.ty.as_ref().map(|ty| ty.span),
-                local.init.as_ref().map(|init| init.span),
+                local.kind.init().map(|init| init.span),
             )),
         };
         let original = replace(&mut self.diagnostic_metadata.current_let_binding, local_spans);
@@ -1426,7 +1426,14 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         walk_list!(self, visit_ty, &local.ty);
 
         // Resolve the initializer.
-        walk_list!(self, visit_expr, &local.init);
+        if let Some((init, els)) = local.kind.init_else_opt() {
+            self.visit_expr(init);
+
+            // Resolve the `else` block
+            if let Some(els) = els {
+                self.visit_block(els);
+            }
+        }
 
         // Resolve the pattern.
         self.resolve_pattern_top(&local.pat, PatternSource::Let);
@@ -1738,7 +1745,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 // whether they can be shadowed by fresh bindings or not, so force an error.
                 // issues/33118#issuecomment-233962221 (see below) still applies here,
                 // but we have to ignore it for backward compatibility.
-                self.r.record_use(ident, ValueNS, binding, false);
+                self.r.record_use(ident, binding, false);
                 return None;
             }
             LexicalScopeBinding::Item(binding) => (binding.res(), Some(binding)),
@@ -1753,7 +1760,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ) if is_syntactic_ambiguity => {
                 // Disambiguate in favor of a unit struct/variant or constant pattern.
                 if let Some(binding) = binding {
-                    self.r.record_use(ident, ValueNS, binding, false);
+                    self.r.record_use(ident, binding, false);
                 }
                 Some(res)
             }
@@ -2309,7 +2316,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 self.resolve_expr(e, Some(&expr));
             }
 
-            ExprKind::Let(ref pat, ref scrutinee) => {
+            ExprKind::Let(ref pat, ref scrutinee, _) => {
                 self.visit_expr(scrutinee);
                 self.resolve_pattern_top(pat, PatternSource::Let);
             }

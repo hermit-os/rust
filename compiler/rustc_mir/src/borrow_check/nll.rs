@@ -40,13 +40,14 @@ use crate::borrow_check::{
     Upvar,
 };
 
-crate type PoloniusOutput = Output<RustcFacts>;
+pub type PoloniusOutput = Output<RustcFacts>;
 
 /// The output of `nll::compute_regions`. This includes the computed `RegionInferenceContext`, any
 /// closure requirements to propagate, and any generated errors.
 crate struct NllOutput<'tcx> {
     pub regioncx: RegionInferenceContext<'tcx>,
     pub opaque_type_values: VecMap<OpaqueTypeKey<'tcx>, Ty<'tcx>>,
+    pub polonius_input: Option<Box<AllFacts>>,
     pub polonius_output: Option<Rc<PoloniusOutput>>,
     pub opt_closure_req: Option<ClosureRegionRequirements<'tcx>>,
     pub nll_errors: RegionErrors<'tcx>,
@@ -216,14 +217,15 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
         }
 
         // 2: the universal region relations `outlives` constraints are emitted as
-        //  `known_subset` facts.
+        //  `known_placeholder_subset` facts.
         for (fr1, fr2) in universal_region_relations.known_outlives() {
             if fr1 != fr2 {
                 debug!(
-                    "compute_regions: emitting polonius `known_subset` fr1={:?}, fr2={:?}",
+                    "compute_regions: emitting polonius `known_placeholder_subset` \
+                     fr1={:?}, fr2={:?}",
                     fr1, fr2
                 );
-                all_facts.known_subset.push((*fr1, *fr2));
+                all_facts.known_placeholder_subset.push((*fr1, *fr2));
             }
         }
     }
@@ -239,6 +241,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
         outlives_constraints,
         member_constraints,
         closure_bounds_mapping,
+        universe_causes,
         type_tests,
     } = constraints;
     let placeholder_indices = Rc::new(placeholder_indices);
@@ -260,6 +263,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
         outlives_constraints,
         member_constraints,
         closure_bounds_mapping,
+        universe_causes,
         type_tests,
         liveness_constraints,
         elements,
@@ -271,7 +275,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
     let def_id = body.source.def_id();
 
     // Dump facts if requested.
-    let polonius_output = all_facts.and_then(|all_facts| {
+    let polonius_output = all_facts.as_ref().and_then(|all_facts| {
         if infcx.tcx.sess.opts.debugging_opts.nll_facts {
             let def_path = infcx.tcx.def_path(def_id);
             let dir_path = PathBuf::from(&infcx.tcx.sess.opts.debugging_opts.nll_facts_dir)
@@ -281,7 +285,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
 
         if infcx.tcx.sess.opts.debugging_opts.polonius {
             let algorithm =
-                env::var("POLONIUS_ALGORITHM").unwrap_or_else(|_| String::from("Naive"));
+                env::var("POLONIUS_ALGORITHM").unwrap_or_else(|_| String::from("Hybrid"));
             let algorithm = Algorithm::from_str(&algorithm).unwrap();
             debug!("compute_regions: using polonius algorithm {:?}", algorithm);
             let _prof_timer = infcx.tcx.prof.generic_activity("polonius_analysis");
@@ -305,6 +309,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
     NllOutput {
         regioncx,
         opaque_type_values: remapped_opaque_tys,
+        polonius_input: all_facts.map(Box::new),
         polonius_output,
         opt_closure_req: closure_region_requirements,
         nll_errors,

@@ -1642,7 +1642,8 @@ impl<T: Clone> Clone for Option<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Default for Option<T> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for Option<T> {
     /// Returns [`None`][Option::None].
     ///
     /// # Examples
@@ -2012,7 +2013,7 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
 }
 
 #[unstable(feature = "try_trait_v2", issue = "84277")]
-impl<T> ops::TryV2 for Option<T> {
+impl<T> ops::Try for Option<T> {
     type Output = T;
     type Residual = Option<convert::Infallible>;
 

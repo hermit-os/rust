@@ -69,12 +69,14 @@
 #![warn(missing_debug_implementations)]
 #![warn(missing_docs)]
 #![allow(explicit_outlives_requirements)]
+#![cfg_attr(bootstrap, allow(incomplete_features))] // if_let_guard
 //
 // Library features for const fns:
 #![feature(const_align_of_val)]
 #![feature(const_alloc_layout)]
 #![feature(const_arguments_as_str)]
 #![feature(const_assert_type)]
+#![feature(const_bigint_helper_methods)]
 #![feature(const_caller_location)]
 #![feature(const_cell_into_inner)]
 #![feature(const_discriminant)]
@@ -103,6 +105,7 @@
 #![feature(const_type_id)]
 #![feature(const_type_name)]
 #![feature(const_unreachable_unchecked)]
+#![feature(const_default_impls)]
 #![feature(duration_consts_2)]
 #![feature(ptr_metadata)]
 #![feature(slice_ptr_get)]
@@ -110,6 +113,7 @@
 //
 // Language features:
 #![feature(abi_unadjusted)]
+#![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
 #![feature(asm)]
 #![feature(associated_type_bounds)]
@@ -132,6 +136,7 @@
 #![feature(exhaustive_patterns)]
 #![feature(extern_types)]
 #![feature(fundamental)]
+#![feature(if_let_guard)]
 #![feature(intra_doc_pointers)]
 #![feature(intrinsics)]
 #![feature(lang_items)]

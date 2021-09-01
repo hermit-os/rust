@@ -587,14 +587,12 @@ macro_rules! make_mir_visitor {
                                 InlineAsmOperand::In { value, .. } => {
                                     self.visit_operand(value, location);
                                 }
-                                InlineAsmOperand::Out { place, .. } => {
-                                    if let Some(place) = place {
-                                        self.visit_place(
-                                            place,
-                                            PlaceContext::MutatingUse(MutatingUseContext::Store),
-                                            location,
-                                        );
-                                    }
+                                InlineAsmOperand::Out { place: Some(place), .. } => {
+                                    self.visit_place(
+                                        place,
+                                        PlaceContext::MutatingUse(MutatingUseContext::Store),
+                                        location,
+                                    );
                                 }
                                 InlineAsmOperand::InOut { in_value, out_place, .. } => {
                                     self.visit_operand(in_value, location);
@@ -610,7 +608,8 @@ macro_rules! make_mir_visitor {
                                 | InlineAsmOperand::SymFn { value } => {
                                     self.visit_constant(value, location);
                                 }
-                                InlineAsmOperand::SymStatic { def_id: _ } => {}
+                                InlineAsmOperand::Out { place: None, .. }
+                                | InlineAsmOperand::SymStatic { def_id: _ } => {}
                             }
                         }
                     }
@@ -1202,7 +1201,7 @@ pub enum NonUseContext {
     StorageDead,
     /// User type annotation assertions for NLL.
     AscribeUserTy,
-    /// The data of an user variable, for debug info.
+    /// The data of a user variable, for debug info.
     VarDebugInfo,
 }
 

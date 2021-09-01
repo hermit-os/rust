@@ -185,9 +185,13 @@ impl fmt::Debug for VarsOs {
 ///
 /// # Errors
 ///
-/// Returns `[None]` if the environment variable isn't set.
-/// Returns `[None]` if the environment variable is not valid Unicode. If this is not
-/// desired, consider using [`var_os`].
+/// This function will return an error if the environment variable isn't set.
+///
+/// This function may return an error if the environment variable's name contains
+/// the equal sign character (`=`) or the NUL character.
+///
+/// This function will return an error if the environment variable's value is
+/// not valid Unicode. If this is not desired, consider using [`var_os`].
 ///
 /// # Examples
 ///
@@ -221,8 +225,13 @@ fn _var(key: &OsStr) -> Result<String, VarError> {
 ///
 /// # Errors
 ///
-/// Returns `[None]` if the variable isn't set.
-/// May return `[None]` if the variable value contains the NUL character.
+/// This function returns an error if the environment variable isn't set.
+///
+/// This function may return an error if the environment variable's name contains
+/// the equal sign character (`=`) or the NUL character.
+///
+/// This function may return an error if the environment variable's value contains
+/// the NUL character.
 ///
 /// # Examples
 ///
@@ -606,6 +615,9 @@ pub fn temp_dir() -> PathBuf {
 /// If the executable was invoked through a symbolic link, some platforms will
 /// return the path of the symbolic link and other platforms will return the
 /// path of the symbolic link’s target.
+///
+/// If the executable is renamed while it is running, platforms may return the
+/// path at the time it was loaded instead of the new path.
 ///
 /// # Errors
 ///

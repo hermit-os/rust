@@ -4,6 +4,7 @@
 #![feature(naked_functions)]
 #![feature(or_patterns)]
 #![crate_type = "lib"]
+#![allow(deprecated)] // llvm_asm!
 
 #[repr(C)]
 pub struct P { x: u8, y: u16 }
@@ -124,7 +125,7 @@ unsafe extern "C" fn invalid_options() {
 #[naked]
 unsafe extern "C" fn invalid_options_continued() {
     asm!("", options(readonly, nostack), options(pure));
-    //~^ ERROR asm with `pure` option must have at least one output
+    //~^ ERROR asm with the `pure` option must have at least one output
     //~| WARN asm options unsupported in naked functions: `nostack`, `pure`, `readonly`
     //~| WARN this was previously accepted
     //~| WARN asm in naked functions must use `noreturn` option

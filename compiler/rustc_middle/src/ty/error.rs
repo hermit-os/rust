@@ -33,6 +33,7 @@ impl<T> ExpectedFound<T> {
 #[derive(Clone, Debug, TypeFoldable)]
 pub enum TypeError<'tcx> {
     Mismatch,
+    ConstnessMismatch(ExpectedFound<ty::BoundConstness>),
     UnsafetyMismatch(ExpectedFound<hir::Unsafety>),
     AbiMismatch(ExpectedFound<abi::Abi>),
     Mutability,
@@ -70,12 +71,6 @@ pub enum TypeError<'tcx> {
     TargetFeatureCast(DefId),
 }
 
-pub enum UnconstrainedNumeric {
-    UnconstrainedFloat,
-    UnconstrainedInt,
-    Neither,
-}
-
 /// Explains the source of a type err in a short, human readable way. This is meant to be placed
 /// in parentheses after some larger message. You should also invoke `note_and_explain_type_err()`
 /// afterwards to present additional details, particularly when it comes to lifetime-related
@@ -106,6 +101,9 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
             CyclicTy(_) => write!(f, "cyclic type of infinite size"),
             CyclicConst(_) => write!(f, "encountered a self-referencing constant"),
             Mismatch => write!(f, "types differ"),
+            ConstnessMismatch(values) => {
+                write!(f, "expected {} bound, found {} bound", values.expected, values.found)
+            }
             UnsafetyMismatch(values) => {
                 write!(f, "expected {} fn, found {} fn", values.expected, values.found)
             }
@@ -213,9 +211,11 @@ impl<'tcx> TypeError<'tcx> {
     pub fn must_include_note(&self) -> bool {
         use self::TypeError::*;
         match self {
-            CyclicTy(_) | CyclicConst(_) | UnsafetyMismatch(_) | Mismatch | AbiMismatch(_)
-            | FixedArraySize(_) | ArgumentSorts(..) | Sorts(_) | IntMismatch(_)
-            | FloatMismatch(_) | VariadicMismatch(_) | TargetFeatureCast(_) => false,
+            CyclicTy(_) | CyclicConst(_) | UnsafetyMismatch(_) | ConstnessMismatch(_)
+            | Mismatch | AbiMismatch(_) | FixedArraySize(_) | ArgumentSorts(..) | Sorts(_)
+            | IntMismatch(_) | FloatMismatch(_) | VariadicMismatch(_) | TargetFeatureCast(_) => {
+                false
+            }
 
             Mutability
             | ArgumentMutability(_)
@@ -279,13 +279,10 @@ impl<'tcx> ty::TyS<'tcx> {
             }
             ty::FnDef(..) => "fn item".into(),
             ty::FnPtr(_) => "fn pointer".into(),
-            ty::Dynamic(ref inner, ..) => {
-                if let Some(principal) = inner.principal() {
-                    format!("trait object `dyn {}`", tcx.def_path_str(principal.def_id())).into()
-                } else {
-                    "trait object".into()
-                }
+            ty::Dynamic(ref inner, ..) if let Some(principal) = inner.principal() => {
+                format!("trait object `dyn {}`", tcx.def_path_str(principal.def_id())).into()
             }
+            ty::Dynamic(..) => "trait object".into(),
             ty::Closure(..) => "closure".into(),
             ty::Generator(def_id, ..) => tcx.generator_kind(def_id).unwrap().descr().into(),
             ty::GeneratorWitness(..) => "generator witness".into(),
@@ -365,20 +362,19 @@ impl<'tcx> TyCtxt<'tcx> {
                         // Issue #63167
                         db.note("distinct uses of `impl Trait` result in different opaque types");
                     }
-                    (ty::Float(_), ty::Infer(ty::IntVar(_))) => {
+                    (ty::Float(_), ty::Infer(ty::IntVar(_)))
                         if let Ok(
                             // Issue #53280
                             snippet,
-                        ) = self.sess.source_map().span_to_snippet(sp)
-                        {
-                            if snippet.chars().all(|c| c.is_digit(10) || c == '-' || c == '_') {
-                                db.span_suggestion(
-                                    sp,
-                                    "use a float literal",
-                                    format!("{}.0", snippet),
-                                    MachineApplicable,
-                                );
-                            }
+                        ) = self.sess.source_map().span_to_snippet(sp) =>
+                    {
+                        if snippet.chars().all(|c| c.is_digit(10) || c == '-' || c == '_') {
+                            db.span_suggestion(
+                                sp,
+                                "use a float literal",
+                                format!("{}.0", snippet),
+                                MachineApplicable,
+                            );
                         }
                     }
                     (ty::Param(expected), ty::Param(found)) => {

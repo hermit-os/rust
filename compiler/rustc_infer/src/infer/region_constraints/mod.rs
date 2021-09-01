@@ -186,7 +186,7 @@ pub enum GenericKind<'tcx> {
 ///        ('a: min) || ('b: min)
 ///     }
 ///
-/// This is described with a `AnyRegion('a, 'b)` node.
+/// This is described with an `AnyRegion('a, 'b)` node.
 #[derive(Debug, Clone)]
 pub enum VerifyBound<'tcx> {
     /// Given a kind K and a bound B, expands to a function like the
@@ -443,6 +443,11 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
     /// Returns the universe for the given variable.
     pub fn var_universe(&self, vid: RegionVid) -> ty::UniverseIndex {
         self.var_infos[vid].universe
+    }
+
+    /// Returns the origin for the given variable.
+    pub fn var_origin(&self, vid: RegionVid) -> RegionVariableOrigin {
+        self.var_infos[vid].origin
     }
 
     fn add_constraint(&mut self, constraint: Constraint<'tcx>, origin: SubregionOrigin<'tcx>) {

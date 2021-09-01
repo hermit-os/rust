@@ -401,7 +401,7 @@ fn rewrite_macro_inner(
                 handle_vec_semi(context, shape, arg_vec, macro_name, style)
             } else {
                 // If we are rewriting `vec!` macro or other special macros,
-                // then we can rewrite this as an usual array literal.
+                // then we can rewrite this as a usual array literal.
                 // Otherwise, we must preserve the original existence of trailing comma.
                 let macro_name = &macro_name.as_str();
                 let mut force_trailing_comma = if trailing_comma {
@@ -1417,7 +1417,7 @@ impl MacroBranch {
     }
 }
 
-/// Format `lazy_static!` from https://crates.io/crates/lazy_static.
+/// Format `lazy_static!` from <https://crates.io/crates/lazy_static>.
 ///
 /// # Expected syntax
 ///

@@ -3,6 +3,7 @@
 use crate::char::decode_utf16;
 use crate::cmp;
 use crate::io;
+use crate::os::windows::io::{FromRawHandle, IntoRawHandle};
 use crate::ptr;
 use crate::str;
 use crate::sys::c;
@@ -53,10 +54,12 @@ fn is_console(handle: c::HANDLE) -> bool {
 fn write(handle_id: c::DWORD, data: &[u8]) -> io::Result<usize> {
     let handle = get_handle(handle_id)?;
     if !is_console(handle) {
-        let handle = Handle::new(handle);
-        let ret = handle.write(data);
-        handle.into_raw(); // Don't close the handle
-        return ret;
+        unsafe {
+            let handle = Handle::from_raw_handle(handle);
+            let ret = handle.write(data);
+            handle.into_raw_handle(); // Don't close the handle
+            return ret;
+        }
     }
 
     // As the console is meant for presenting text, we assume bytes of `data` come from a string
@@ -140,10 +143,12 @@ impl io::Read for Stdin {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let handle = get_handle(c::STD_INPUT_HANDLE)?;
         if !is_console(handle) {
-            let handle = Handle::new(handle);
-            let ret = handle.read(buf);
-            handle.into_raw(); // Don't close the handle
-            return ret;
+            unsafe {
+                let handle = Handle::from_raw_handle(handle);
+                let ret = handle.read(buf);
+                handle.into_raw_handle(); // Don't close the handle
+                return ret;
+            }
         }
 
         if buf.len() == 0 {
@@ -157,7 +162,7 @@ impl io::Read for Stdin {
         }
 
         let mut utf16_buf = [0u16; MAX_BUFFER_SIZE / 2];
-        // In the worst case, an UTF-8 string can take 3 bytes for every `u16` of an UTF-16. So
+        // In the worst case, a UTF-8 string can take 3 bytes for every `u16` of a UTF-16. So
         // we can read at most a third of `buf.len()` chars and uphold the guarantee no data gets
         // lost.
         let amount = cmp::min(buf.len() / 3, utf16_buf.len());

@@ -132,7 +132,7 @@ impl<'tcx> Cx<'tcx> {
                     },
                 };
 
-                let expr = box [self.thir.exprs.push(expr)];
+                let expr = Box::new([self.thir.exprs.push(expr)]);
 
                 self.overloaded_place(hir_expr, adjustment.target, Some(call), expr, deref.span)
             }
@@ -190,7 +190,7 @@ impl<'tcx> Cx<'tcx> {
                     ExprKind::Call {
                         ty: method.ty,
                         fun: self.thir.exprs.push(method),
-                        args: box [self.mirror_expr(fun), tupled_args],
+                        args: Box::new([self.mirror_expr(fun), tupled_args]),
                         from_hir_call: true,
                         fn_span: expr.span,
                     }
@@ -266,7 +266,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let rhs = self.mirror_expr(rhs);
-                    self.overloaded_operator(expr, box [lhs, rhs])
+                    self.overloaded_operator(expr, Box::new([lhs, rhs]))
                 } else {
                     ExprKind::AssignOp {
                         op: bin_op(op.node),
@@ -286,7 +286,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let rhs = self.mirror_expr(rhs);
-                    self.overloaded_operator(expr, box [lhs, rhs])
+                    self.overloaded_operator(expr, Box::new([lhs, rhs]))
                 } else {
                     // FIXME overflow
                     match op.node {
@@ -317,7 +317,7 @@ impl<'tcx> Cx<'tcx> {
                 if self.typeck_results().is_method_call(expr) {
                     let lhs = self.mirror_expr(lhs);
                     let index = self.mirror_expr(index);
-                    self.overloaded_place(expr, expr_ty, None, box [lhs, index], expr.span)
+                    self.overloaded_place(expr, expr_ty, None, Box::new([lhs, index]), expr.span)
                 } else {
                     ExprKind::Index { lhs: self.mirror_expr(lhs), index: self.mirror_expr(index) }
                 }
@@ -326,7 +326,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Deref, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_place(expr, expr_ty, None, box [arg], expr.span)
+                    self.overloaded_place(expr, expr_ty, None, Box::new([arg]), expr.span)
                 } else {
                     ExprKind::Deref { arg: self.mirror_expr(arg) }
                 }
@@ -335,7 +335,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Not, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_operator(expr, box [arg])
+                    self.overloaded_operator(expr, Box::new([arg]))
                 } else {
                     ExprKind::Unary { op: UnOp::Not, arg: self.mirror_expr(arg) }
                 }
@@ -344,7 +344,7 @@ impl<'tcx> Cx<'tcx> {
             hir::ExprKind::Unary(hir::UnOp::Neg, ref arg) => {
                 if self.typeck_results().is_method_call(expr) {
                     let arg = self.mirror_expr(arg);
-                    self.overloaded_operator(expr, box [arg])
+                    self.overloaded_operator(expr, Box::new([arg]))
                 } else if let hir::ExprKind::Lit(ref lit) = arg.kind {
                     ExprKind::Literal {
                         literal: self.const_eval_literal(&lit.node, expr_ty, lit.span, true),
@@ -590,6 +590,9 @@ impl<'tcx> Cx<'tcx> {
                 },
                 Err(err) => bug!("invalid loop id for continue: {}", err),
             },
+            hir::ExprKind::Let(ref pat, ref expr, _) => {
+                ExprKind::Let { expr: self.mirror_expr(expr), pat: self.pattern_from_hir(pat) }
+            }
             hir::ExprKind::If(cond, then, else_opt) => ExprKind::If {
                 cond: self.mirror_expr(cond),
                 then: self.mirror_expr(then),
@@ -690,11 +693,10 @@ impl<'tcx> Cx<'tcx> {
                                 // and not the beginning of discriminants (which is always `0`)
                                 let substs = InternalSubsts::identity_for_item(self.tcx(), did);
                                 let lhs = ty::Const {
-                                    val: ty::ConstKind::Unevaluated(ty::Unevaluated {
-                                        def: ty::WithOptConstParam::unknown(did),
+                                    val: ty::ConstKind::Unevaluated(ty::Unevaluated::new(
+                                        ty::WithOptConstParam::unknown(did),
                                         substs,
-                                        promoted: None,
-                                    }),
+                                    )),
                                     ty: var_ty,
                                 };
                                 let lhs = self.thir.exprs.push(mk_const(self.tcx().mk_const(lhs)));
@@ -785,7 +787,7 @@ impl<'tcx> Cx<'tcx> {
                 self.user_substs_applied_to_ty_of_hir_id(hir_id)
             }
 
-            // `Self` is used in expression as a tuple struct constructor or an unit struct constructor
+            // `Self` is used in expression as a tuple struct constructor or a unit struct constructor
             Res::SelfCtor(_) => self.user_substs_applied_to_ty_of_hir_id(hir_id),
 
             _ => bug!("user_substs_applied_to_res: unexpected res {:?} at {:?}", res, hir_id),
@@ -886,11 +888,10 @@ impl<'tcx> Cx<'tcx> {
                 debug!("convert_path_expr: (const) user_ty={:?}", user_ty);
                 ExprKind::Literal {
                     literal: self.tcx.mk_const(ty::Const {
-                        val: ty::ConstKind::Unevaluated(ty::Unevaluated {
-                            def: ty::WithOptConstParam::unknown(def_id),
+                        val: ty::ConstKind::Unevaluated(ty::Unevaluated::new(
+                            ty::WithOptConstParam::unknown(def_id),
                             substs,
-                            promoted: None,
-                        }),
+                        )),
                         ty: self.typeck_results().node_type(expr.hir_id),
                     }),
                     user_ty,
@@ -911,7 +912,7 @@ impl<'tcx> Cx<'tcx> {
                         variant_index: adt_def.variant_index_with_ctor_id(def_id),
                         substs,
                         user_ty: user_provided_type,
-                        fields: box [],
+                        fields: Box::new([]),
                         base: None,
                     })),
                     _ => bug!("unexpected ty: {:?}", ty),

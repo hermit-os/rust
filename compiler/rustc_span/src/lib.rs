@@ -16,10 +16,12 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(array_windows)]
 #![feature(crate_visibility_modifier)]
+#![feature(if_let_guard)]
 #![feature(negative_impls)]
 #![feature(nll)]
 #![feature(min_specialization)]
 #![feature(thread_local_const_init)]
+#![cfg_attr(bootstrap, allow(incomplete_features))] // if_let_guard
 
 #[macro_use]
 extern crate rustc_macros;
@@ -157,7 +159,7 @@ scoped_tls::scoped_thread_local!(static SESSION_GLOBALS: SessionGlobals);
 // FIXME: We should use this enum or something like it to get rid of the
 // use of magic `/rust/1.x/...` paths across the board.
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd)]
-#[derive(HashStable_Generic, Decodable)]
+#[derive(Decodable)]
 pub enum RealFileName {
     LocalPath(PathBuf),
     /// For remapped paths (namely paths into libstd that have been mapped
@@ -269,7 +271,7 @@ impl RealFileName {
 
 /// Differentiates between real files and common virtual files.
 #[derive(Debug, Eq, PartialEq, Clone, Ord, PartialOrd, Hash)]
-#[derive(HashStable_Generic, Decodable, Encodable)]
+#[derive(Decodable, Encodable)]
 pub enum FileName {
     Real(RealFileName),
     /// Call to `quote!`.
@@ -593,6 +595,14 @@ impl Span {
     pub fn parent(self) -> Option<Span> {
         let expn_data = self.ctxt().outer_expn_data();
         if !expn_data.is_root() { Some(expn_data.call_site) } else { None }
+    }
+
+    /// Walk down the expansion ancestors to find a span that's contained within `outer`.
+    pub fn find_ancestor_inside(mut self, outer: Span) -> Option<Span> {
+        while !outer.contains(self) {
+            self = self.parent()?;
+        }
+        Some(self)
     }
 
     /// Edition of the crate from which this span came.

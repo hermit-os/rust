@@ -4,9 +4,8 @@ use rustc_driver::abort_on_err;
 use rustc_errors::emitter::{Emitter, EmitterWriter};
 use rustc_errors::json::JsonEmitter;
 use rustc_feature::UnstableFeatures;
-use rustc_hir::def::Namespace::TypeNS;
 use rustc_hir::def::Res;
-use rustc_hir::def_id::{DefId, LocalDefId, CRATE_DEF_INDEX};
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::HirId;
 use rustc_hir::{
     intravisit::{self, NestedVisitorMap, Visitor},
@@ -23,7 +22,7 @@ use rustc_session::DiagnosticOutput;
 use rustc_session::Session;
 use rustc_span::source_map;
 use rustc_span::symbol::sym;
-use rustc_span::{Span, DUMMY_SP};
+use rustc_span::Span;
 
 use std::cell::RefCell;
 use std::mem;
@@ -265,7 +264,7 @@ crate fn create_config(
         stderr: None,
         lint_caps,
         parse_sess_created: None,
-        register_lints: Some(box crate::lint::register_lints),
+        register_lints: Some(Box::new(crate::lint::register_lints)),
         override_queries: Some(|_sess, providers, _external_providers| {
             // Most lints will require typechecking, so just don't run them.
             providers.lint_mod = |_, _| {};
@@ -301,41 +300,13 @@ crate fn create_config(
 }
 
 crate fn create_resolver<'a>(
-    externs: config::Externs,
     queries: &Queries<'a>,
     sess: &Session,
 ) -> Rc<RefCell<interface::BoxedResolver>> {
-    let extern_names: Vec<String> = externs
-        .iter()
-        .filter(|(_, entry)| entry.add_prelude)
-        .map(|(name, _)| name)
-        .cloned()
-        .collect();
+    let (krate, resolver, _) = &*abort_on_err(queries.expansion(), sess).peek();
+    let resolver = resolver.clone();
 
-    let (_, resolver, _) = &*abort_on_err(queries.expansion(), sess).peek();
-
-    // Before we actually clone it, let's force all the extern'd crates to
-    // actually be loaded, just in case they're only referred to inside
-    // intra-doc links
-    resolver.borrow_mut().access(|resolver| {
-        sess.time("load_extern_crates", || {
-            for extern_name in &extern_names {
-                debug!("loading extern crate {}", extern_name);
-                if let Err(()) = resolver
-                    .resolve_str_path_error(
-                        DUMMY_SP,
-                        extern_name,
-                        TypeNS,
-                        LocalDefId { local_def_index: CRATE_DEF_INDEX }.to_def_id(),
-                  ) {
-                    warn!("unable to resolve external crate {} (do you have an unused `--extern` crate?)", extern_name)
-                  }
-            }
-        });
-    });
-
-    // Now we're good to clone the resolver because everything should be loaded
-    resolver.clone()
+    crate::passes::collect_intra_doc_links::load_intra_link_crates(resolver, krate)
 }
 
 crate fn run_global_ctxt(
@@ -528,9 +499,7 @@ crate fn run_global_ctxt(
 
     let render_options = ctxt.render_options;
     let mut cache = ctxt.cache;
-    krate = tcx.sess.time("create_format_cache", || {
-        cache.populate(krate, tcx, &render_options.extern_html_root_urls, &render_options.output)
-    });
+    krate = tcx.sess.time("create_format_cache", || cache.populate(krate, tcx, &render_options));
 
     // The main crate doc comments are always collapsed.
     krate.collapsed = true;

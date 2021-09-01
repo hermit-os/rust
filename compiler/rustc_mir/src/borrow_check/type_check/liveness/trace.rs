@@ -5,7 +5,7 @@ use rustc_middle::mir::{BasicBlock, Body, ConstraintCategory, Local, Location};
 use rustc_middle::ty::{Ty, TypeFoldable};
 use rustc_trait_selection::traits::query::dropck_outlives::DropckOutlivesResult;
 use rustc_trait_selection::traits::query::type_op::outlives::DropckOutlives;
-use rustc_trait_selection::traits::query::type_op::TypeOp;
+use rustc_trait_selection::traits::query::type_op::{TypeOp, TypeOpOutput};
 use std::rc::Rc;
 
 use crate::dataflow::impls::MaybeInitializedPlaces;
@@ -171,7 +171,7 @@ impl LivenessResults<'me, 'typeck, 'flow, 'tcx> {
         for (local, location) in drop_used {
             if !live_locals.contains(&local) {
                 let local_ty = self.cx.body.local_decls[local].ty;
-                if local_ty.has_free_regions() {
+                if local_ty.has_free_regions(self.cx.typeck.tcx()) {
                     self.cx.add_drop_live_facts_for(local, local_ty, &[location], &locations);
                 }
             }
@@ -519,9 +519,9 @@ impl LivenessContext<'_, '_, '_, 'tcx> {
         debug!("compute_drop_data(dropped_ty={:?})", dropped_ty,);
 
         let param_env = typeck.param_env;
-        let (dropck_result, region_constraint_data) =
+        let TypeOpOutput { output, constraints, .. } =
             param_env.and(DropckOutlives::new(dropped_ty)).fully_perform(typeck.infcx).unwrap();
 
-        DropData { dropck_result, region_constraint_data }
+        DropData { dropck_result: output, region_constraint_data: constraints }
     }
 }

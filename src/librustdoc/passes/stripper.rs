@@ -40,6 +40,7 @@ impl<'a> DocFolder for Stripper<'a> {
             | clean::UnionItem(..)
             | clean::AssocConstItem(..)
             | clean::TraitAliasItem(..)
+            | clean::MacroItem(..)
             | clean::ForeignTypeItem => {
                 if i.def_id.is_local() {
                     if !self.access_levels.is_exported(i.def_id.expect_def_id()) {
@@ -70,8 +71,8 @@ impl<'a> DocFolder for Stripper<'a> {
 
             clean::ImplItem(..) => {}
 
-            // tymethods/macros have no control over privacy
-            clean::MacroItem(..) | clean::TyMethodItem(..) => {}
+            // tymethods have no control over privacy
+            clean::TyMethodItem(..) => {}
 
             // Proc-macros are always public
             clean::ProcMacroItem(..) => {}
@@ -93,8 +94,8 @@ impl<'a> DocFolder for Stripper<'a> {
 
             // implementations of traits are always public.
             clean::ImplItem(ref imp) if imp.trait_.is_some() => true,
-            // Struct variant fields have inherited visibility
-            clean::VariantItem(clean::Variant::Struct(..)) => true,
+            // Variant fields have inherited visibility
+            clean::VariantItem(clean::Variant::Struct(..) | clean::Variant::Tuple(..)) => true,
             _ => false,
         };
 

@@ -275,16 +275,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                     return self.write_immediate(*val, dest);
                 }
                 // trait upcasting coercion
-                let principal_a = data_a.principal().expect(
-                    "unsize_into_ptr: missing principal trait for trait upcasting coercion",
-                );
-                let principal_b = data_b.principal().expect(
-                    "unsize_into_ptr: missing principal trait for trait upcasting coercion",
-                );
-
                 let vptr_entry_idx = self.tcx.vtable_trait_upcasting_coercion_new_vptr_slot((
-                    principal_a.with_self_ty(*self.tcx, src_pointee_ty),
-                    principal_b.with_self_ty(*self.tcx, src_pointee_ty),
+                    src_pointee_ty,
+                    dest_pointee_ty,
                 ));
 
                 if let Some(entry_idx) = vptr_entry_idx {
@@ -347,7 +340,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 // Example: `Arc<T>` -> `Arc<Trait>`
                 // here we need to increase the size of every &T thin ptr field to a fat ptr
                 for i in 0..src.layout.fields.count() {
-                    let cast_ty_field = cast_ty.field(self, i)?;
+                    let cast_ty_field = cast_ty.field(self, i);
                     if cast_ty_field.is_zst() {
                         continue;
                     }

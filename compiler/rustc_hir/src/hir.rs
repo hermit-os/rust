@@ -670,9 +670,6 @@ pub struct ModuleItems {
 /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/hir.html
 #[derive(Debug)]
 pub struct Crate<'hir> {
-    // Attributes from non-exported macros, kept only for collecting the library feature list.
-    pub non_exported_macro_attrs: &'hir [Attribute],
-
     pub owners: IndexVec<LocalDefId, Option<OwnerNode<'hir>>>,
     pub bodies: BTreeMap<BodyId, Body<'hir>>,
     pub trait_impls: BTreeMap<DefId, Vec<LocalDefId>>,
@@ -743,7 +740,7 @@ impl Crate<'_> {
                 OwnerNode::ForeignItem(item) => visitor.visit_foreign_item(item),
                 OwnerNode::ImplItem(item) => visitor.visit_impl_item(item),
                 OwnerNode::TraitItem(item) => visitor.visit_trait_item(item),
-                OwnerNode::MacroDef(_) | OwnerNode::Crate(_) => {}
+                OwnerNode::Crate(_) => {}
             }
         }
     }
@@ -758,7 +755,7 @@ impl Crate<'_> {
             Some(OwnerNode::ForeignItem(item)) => visitor.visit_foreign_item(item),
             Some(OwnerNode::ImplItem(item)) => visitor.visit_impl_item(item),
             Some(OwnerNode::TraitItem(item)) => visitor.visit_trait_item(item),
-            Some(OwnerNode::MacroDef(_)) | Some(OwnerNode::Crate(_)) | None => {}
+            Some(OwnerNode::Crate(_)) | None => {}
         })
     }
 
@@ -767,32 +764,6 @@ impl Crate<'_> {
             Some(OwnerNode::Item(item)) => Some(*item),
             _ => None,
         })
-    }
-
-    pub fn exported_macros<'hir>(&'hir self) -> impl Iterator<Item = &'hir MacroDef<'hir>> + 'hir {
-        self.owners.iter().filter_map(|owner| match owner {
-            Some(OwnerNode::MacroDef(macro_def)) => Some(*macro_def),
-            _ => None,
-        })
-    }
-}
-
-/// A macro definition, in this crate or imported from another.
-///
-/// Not parsed directly, but created on macro import or `macro_rules!` expansion.
-#[derive(Debug)]
-pub struct MacroDef<'hir> {
-    pub ident: Ident,
-    pub vis: Visibility<'hir>,
-    pub def_id: LocalDefId,
-    pub span: Span,
-    pub ast: ast::MacroDef,
-}
-
-impl MacroDef<'_> {
-    #[inline]
-    pub fn hir_id(&self) -> HirId {
-        HirId::make_owner(self.def_id)
     }
 }
 
@@ -974,7 +945,7 @@ pub enum PatKind<'hir> {
     /// Invariant: `pats.len() >= 2`.
     Or(&'hir [Pat<'hir>]),
 
-    /// A path pattern for an unit struct/variant or a (maybe-associated) constant.
+    /// A path pattern for a unit struct/variant or a (maybe-associated) constant.
     Path(QPath<'hir>),
 
     /// A tuple pattern (e.g., `(a, b)`).
@@ -1482,6 +1453,7 @@ impl Expr<'_> {
             ExprKind::Type(..) | ExprKind::Cast(..) => ExprPrecedence::Cast,
             ExprKind::DropTemps(ref expr, ..) => expr.precedence(),
             ExprKind::If(..) => ExprPrecedence::If,
+            ExprKind::Let(..) => ExprPrecedence::Let,
             ExprKind::Loop(..) => ExprPrecedence::Loop,
             ExprKind::Match(..) => ExprPrecedence::Match,
             ExprKind::Closure(..) => ExprPrecedence::Closure,
@@ -1552,6 +1524,7 @@ impl Expr<'_> {
             | ExprKind::Break(..)
             | ExprKind::Continue(..)
             | ExprKind::Ret(..)
+            | ExprKind::Let(..)
             | ExprKind::Loop(..)
             | ExprKind::Assign(..)
             | ExprKind::InlineAsm(..)
@@ -1634,6 +1607,7 @@ impl Expr<'_> {
             | ExprKind::Break(..)
             | ExprKind::Continue(..)
             | ExprKind::Ret(..)
+            | ExprKind::Let(..)
             | ExprKind::Loop(..)
             | ExprKind::Assign(..)
             | ExprKind::InlineAsm(..)
@@ -1725,6 +1699,11 @@ pub enum ExprKind<'hir> {
     /// This construct only exists to tweak the drop order in HIR lowering.
     /// An example of that is the desugaring of `for` loops.
     DropTemps(&'hir Expr<'hir>),
+    /// A `let $pat = $expr` expression.
+    ///
+    /// These are not `Local` and only occur as expressions.
+    /// The `let Some(x) = foo()` in `if let Some(x) = foo()` is an example of `Let(..)`.
+    Let(&'hir Pat<'hir>, &'hir Expr<'hir>, Span),
     /// An `if` block, with an optional else block.
     ///
     /// I.e., `if <expr> { <expr> } else { <expr> }`.
@@ -1884,15 +1863,6 @@ pub enum LocalSource {
 pub enum MatchSource {
     /// A `match _ { .. }`.
     Normal,
-    /// An `if let _ = _ { .. }` (optionally with `else { .. }`).
-    IfLetDesugar { contains_else_clause: bool },
-    /// An `if let _ = _ => { .. }` match guard.
-    IfLetGuardDesugar,
-    /// A `while _ { .. }` (which was desugared to a `loop { match _ { .. } }`).
-    WhileDesugar,
-    /// A `while let _ = _ { .. }` (which was desugared to a
-    /// `loop { match _ { .. } }`).
-    WhileLetDesugar,
     /// A desugared `for _ in _ { .. }` loop.
     ForLoopDesugar,
     /// A desugared `?` operator.
@@ -1902,12 +1872,11 @@ pub enum MatchSource {
 }
 
 impl MatchSource {
-    pub fn name(self) -> &'static str {
+    #[inline]
+    pub const fn name(self) -> &'static str {
         use MatchSource::*;
         match self {
             Normal => "match",
-            IfLetDesugar { .. } | IfLetGuardDesugar => "if",
-            WhileDesugar | WhileLetDesugar => "while",
             ForLoopDesugar => "for",
             TryDesugar => "?",
             AwaitDesugar => ".await",
@@ -1922,8 +1891,6 @@ pub enum LoopSource {
     Loop,
     /// A `while _ { .. }` loop.
     While,
-    /// A `while let _ = _ { .. }` loop.
-    WhileLet,
     /// A `for _ in _ { .. }` loop.
     ForLoop,
 }
@@ -1932,7 +1899,7 @@ impl LoopSource {
     pub fn name(self) -> &'static str {
         match self {
             LoopSource::Loop => "loop",
-            LoopSource::While | LoopSource::WhileLet => "while",
+            LoopSource::While => "while",
             LoopSource::ForLoop => "for",
         }
     }
@@ -2327,7 +2294,7 @@ pub enum TyKind<'hir> {
     ///
     /// Type parameters may be stored in each `PathSegment`.
     Path(QPath<'hir>),
-    /// A opaque type definition itself. This is currently only used for the
+    /// An opaque type definition itself. This is currently only used for the
     /// `opaque type Foo: Trait` item that `impl Trait` in desugars to.
     ///
     /// The generic argument list contains the lifetimes (and in the future
@@ -2390,6 +2357,7 @@ impl<'hir> InlineAsmOperand<'hir> {
 #[derive(Debug, HashStable_Generic)]
 pub struct InlineAsm<'hir> {
     pub template: &'hir [InlineAsmTemplatePiece],
+    pub template_strs: &'hir [(Symbol, Option<Symbol>, Span)],
     pub operands: &'hir [(InlineAsmOperand<'hir>, Span)],
     pub options: InlineAsmOptions,
     pub line_spans: &'hir [Span],
@@ -2605,7 +2573,7 @@ pub struct PolyTraitRef<'hir> {
 
 pub type Visibility<'hir> = Spanned<VisibilityKind<'hir>>;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum VisibilityKind<'hir> {
     Public,
     Crate(CrateSugar),
@@ -2751,6 +2719,15 @@ pub enum Constness {
     NotConst,
 }
 
+impl fmt::Display for Constness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match *self {
+            Self::Const => "const",
+            Self::NotConst => "non-const",
+        })
+    }
+}
+
 #[derive(Copy, Clone, Encodable, Debug, HashStable_Generic)]
 pub struct FnHeader {
     pub unsafety: Unsafety,
@@ -2785,6 +2762,8 @@ pub enum ItemKind<'hir> {
     Const(&'hir Ty<'hir>, BodyId),
     /// A function declaration.
     Fn(FnSig<'hir>, Generics<'hir>, BodyId),
+    /// A MBE macro definition (`macro_rules!` or `macro`).
+    Macro(ast::MacroDef),
     /// A module.
     Mod(Mod<'hir>),
     /// An external module, e.g. `extern { .. }`.
@@ -2850,6 +2829,7 @@ impl ItemKind<'_> {
             ItemKind::Static(..) => "static item",
             ItemKind::Const(..) => "constant item",
             ItemKind::Fn(..) => "function",
+            ItemKind::Macro(..) => "macro",
             ItemKind::Mod(..) => "module",
             ItemKind::ForeignMod { .. } => "extern block",
             ItemKind::GlobalAsm(..) => "global asm item",
@@ -2990,7 +2970,6 @@ pub enum OwnerNode<'hir> {
     ForeignItem(&'hir ForeignItem<'hir>),
     TraitItem(&'hir TraitItem<'hir>),
     ImplItem(&'hir ImplItem<'hir>),
-    MacroDef(&'hir MacroDef<'hir>),
     Crate(&'hir Mod<'hir>),
 }
 
@@ -3000,8 +2979,7 @@ impl<'hir> OwnerNode<'hir> {
             OwnerNode::Item(Item { ident, .. })
             | OwnerNode::ForeignItem(ForeignItem { ident, .. })
             | OwnerNode::ImplItem(ImplItem { ident, .. })
-            | OwnerNode::TraitItem(TraitItem { ident, .. })
-            | OwnerNode::MacroDef(MacroDef { ident, .. }) => Some(*ident),
+            | OwnerNode::TraitItem(TraitItem { ident, .. }) => Some(*ident),
             OwnerNode::Crate(..) => None,
         }
     }
@@ -3012,7 +2990,6 @@ impl<'hir> OwnerNode<'hir> {
             | OwnerNode::ForeignItem(ForeignItem { span, .. })
             | OwnerNode::ImplItem(ImplItem { span, .. })
             | OwnerNode::TraitItem(TraitItem { span, .. })
-            | OwnerNode::MacroDef(MacroDef { span, .. })
             | OwnerNode::Crate(Mod { inner: span, .. }) => *span,
         }
     }
@@ -3056,8 +3033,7 @@ impl<'hir> OwnerNode<'hir> {
             OwnerNode::Item(Item { def_id, .. })
             | OwnerNode::TraitItem(TraitItem { def_id, .. })
             | OwnerNode::ImplItem(ImplItem { def_id, .. })
-            | OwnerNode::ForeignItem(ForeignItem { def_id, .. })
-            | OwnerNode::MacroDef(MacroDef { def_id, .. }) => *def_id,
+            | OwnerNode::ForeignItem(ForeignItem { def_id, .. }) => *def_id,
             OwnerNode::Crate(..) => crate::CRATE_HIR_ID.owner,
         }
     }
@@ -3089,13 +3065,6 @@ impl<'hir> OwnerNode<'hir> {
             _ => panic!(),
         }
     }
-
-    pub fn expect_macro_def(self) -> &'hir MacroDef<'hir> {
-        match self {
-            OwnerNode::MacroDef(n) => n,
-            _ => panic!(),
-        }
-    }
 }
 
 impl<'hir> Into<OwnerNode<'hir>> for &'hir Item<'hir> {
@@ -3122,12 +3091,6 @@ impl<'hir> Into<OwnerNode<'hir>> for &'hir TraitItem<'hir> {
     }
 }
 
-impl<'hir> Into<OwnerNode<'hir>> for &'hir MacroDef<'hir> {
-    fn into(self) -> OwnerNode<'hir> {
-        OwnerNode::MacroDef(self)
-    }
-}
-
 impl<'hir> Into<Node<'hir>> for OwnerNode<'hir> {
     fn into(self) -> Node<'hir> {
         match self {
@@ -3135,7 +3098,6 @@ impl<'hir> Into<Node<'hir>> for OwnerNode<'hir> {
             OwnerNode::ForeignItem(n) => Node::ForeignItem(n),
             OwnerNode::ImplItem(n) => Node::ImplItem(n),
             OwnerNode::TraitItem(n) => Node::TraitItem(n),
-            OwnerNode::MacroDef(n) => Node::MacroDef(n),
             OwnerNode::Crate(n) => Node::Crate(n),
         }
     }
@@ -3161,7 +3123,6 @@ pub enum Node<'hir> {
     Arm(&'hir Arm<'hir>),
     Block(&'hir Block<'hir>),
     Local(&'hir Local<'hir>),
-    MacroDef(&'hir MacroDef<'hir>),
 
     /// `Ctor` refers to the constructor of an enum variant or struct. Only tuple or unit variants
     /// with synthesized constructors.
@@ -3177,6 +3138,20 @@ pub enum Node<'hir> {
 }
 
 impl<'hir> Node<'hir> {
+    /// Get the identifier of this `Node`, if applicable.
+    ///
+    /// # Edge cases
+    ///
+    /// Calling `.ident()` on a [`Node::Ctor`] will return `None`
+    /// because `Ctor`s do not have identifiers themselves.
+    /// Instead, call `.ident()` on the parent struct/variant, like so:
+    ///
+    /// ```ignore (illustrative)
+    /// ctor
+    ///     .ctor_hir_id()
+    ///     .and_then(|ctor_id| tcx.hir().find(tcx.hir().get_parent_node(ctor_id)))
+    ///     .and_then(|parent| parent.ident())
+    /// ```
     pub fn ident(&self) -> Option<Ident> {
         match self {
             Node::TraitItem(TraitItem { ident, .. })
@@ -3184,9 +3159,25 @@ impl<'hir> Node<'hir> {
             | Node::ForeignItem(ForeignItem { ident, .. })
             | Node::Field(FieldDef { ident, .. })
             | Node::Variant(Variant { ident, .. })
-            | Node::MacroDef(MacroDef { ident, .. })
-            | Node::Item(Item { ident, .. }) => Some(*ident),
-            _ => None,
+            | Node::Item(Item { ident, .. })
+            | Node::PathSegment(PathSegment { ident, .. }) => Some(*ident),
+            Node::Lifetime(lt) => Some(lt.name.ident()),
+            Node::GenericParam(p) => Some(p.name.ident()),
+            Node::Param(..)
+            | Node::AnonConst(..)
+            | Node::Expr(..)
+            | Node::Stmt(..)
+            | Node::Block(..)
+            | Node::Ctor(..)
+            | Node::Pat(..)
+            | Node::Binding(..)
+            | Node::Arm(..)
+            | Node::Local(..)
+            | Node::Visibility(..)
+            | Node::Crate(..)
+            | Node::Ty(..)
+            | Node::TraitRef(..)
+            | Node::Infer(..) => None,
         }
     }
 
@@ -3228,8 +3219,7 @@ impl<'hir> Node<'hir> {
             Node::Item(Item { def_id, .. })
             | Node::TraitItem(TraitItem { def_id, .. })
             | Node::ImplItem(ImplItem { def_id, .. })
-            | Node::ForeignItem(ForeignItem { def_id, .. })
-            | Node::MacroDef(MacroDef { def_id, .. }) => Some(HirId::make_owner(*def_id)),
+            | Node::ForeignItem(ForeignItem { def_id, .. }) => Some(HirId::make_owner(*def_id)),
             Node::Field(FieldDef { hir_id, .. })
             | Node::AnonConst(AnonConst { hir_id, .. })
             | Node::Expr(Expr { hir_id, .. })
@@ -3252,8 +3242,13 @@ impl<'hir> Node<'hir> {
         }
     }
 
-    /// Returns `Constness::Const` when this node is a const fn/impl.
-    pub fn constness(&self) -> Constness {
+    /// Returns `Constness::Const` when this node is a const fn/impl/item,
+    ///
+    /// HACK(fee1-dead): or an associated type in a trait. This works because
+    /// only typeck cares about const trait predicates, so although the predicates
+    /// query would return const predicates when it does not need to be const,
+    /// it wouldn't have any effect.
+    pub fn constness_for_typeck(&self) -> Constness {
         match self {
             Node::Item(Item {
                 kind: ItemKind::Fn(FnSig { header: FnHeader { constness, .. }, .. }, ..),
@@ -3269,6 +3264,11 @@ impl<'hir> Node<'hir> {
             })
             | Node::Item(Item { kind: ItemKind::Impl(Impl { constness, .. }), .. }) => *constness,
 
+            Node::Item(Item { kind: ItemKind::Const(..), .. })
+            | Node::TraitItem(TraitItem { kind: TraitItemKind::Const(..), .. })
+            | Node::TraitItem(TraitItem { kind: TraitItemKind::Type(..), .. })
+            | Node::ImplItem(ImplItem { kind: ImplItemKind::Const(..), .. }) => Constness::Const,
+
             _ => Constness::NotConst,
         }
     }
@@ -3279,7 +3279,6 @@ impl<'hir> Node<'hir> {
             Node::ForeignItem(i) => Some(OwnerNode::ForeignItem(i)),
             Node::TraitItem(i) => Some(OwnerNode::TraitItem(i)),
             Node::ImplItem(i) => Some(OwnerNode::ImplItem(i)),
-            Node::MacroDef(i) => Some(OwnerNode::MacroDef(i)),
             Node::Crate(i) => Some(OwnerNode::Crate(i)),
             _ => None,
         }

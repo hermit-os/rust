@@ -334,7 +334,7 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
     /// process (via `take_counter()`).
     ///
     /// Any other counter associated with a `BasicCoverageBlock`, or its incoming edge, but not
-    /// associated with a `CoverageSpan`, should only exist if the counter is a `Expression`
+    /// associated with a `CoverageSpan`, should only exist if the counter is an `Expression`
     /// dependency (one of the expression operands). Collect them, and inject the additional
     /// counters into the MIR, without a reportable coverage span.
     fn inject_indirect_counters(
@@ -478,10 +478,10 @@ fn inject_statement(
     let source_info = data.terminator().source_info;
     let statement = Statement {
         source_info,
-        kind: StatementKind::Coverage(box Coverage {
+        kind: StatementKind::Coverage(Box::new(Coverage {
             kind: counter_kind,
             code_region: some_code_region,
-        }),
+        })),
     };
     data.statements.insert(0, statement);
 }
@@ -495,7 +495,7 @@ fn inject_intermediate_expression(mir_body: &mut mir::Body<'tcx>, expression: Co
     let source_info = data.terminator().source_info;
     let statement = Statement {
         source_info,
-        kind: StatementKind::Coverage(box Coverage { kind: expression, code_region: None }),
+        kind: StatementKind::Coverage(Box::new(Coverage { kind: expression, code_region: None })),
     };
     data.statements.push(statement);
 }

@@ -41,7 +41,7 @@ use rustc_session::Session;
 use rustc_session::SessionLintStore;
 use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::{symbol::Symbol, MultiSpan, Span, DUMMY_SP};
-use rustc_target::abi::LayoutOf;
+use rustc_target::abi::{self, LayoutOf};
 use tracing::debug;
 
 use std::cell::Cell;
@@ -332,7 +332,16 @@ impl LintStore {
         crate_attrs: &[ast::Attribute],
     ) {
         let (tool_name, lint_name_only) = parse_lint_and_tool_name(lint_name);
-
+        if lint_name_only == crate::WARNINGS.name_lower() && level == Level::ForceWarn {
+            return struct_span_err!(
+                sess,
+                DUMMY_SP,
+                E0602,
+                "`{}` lint group is not supported with ´--force-warn´",
+                crate::WARNINGS.name_lower()
+            )
+            .emit();
+        }
         let db = match self.check_lint_name(sess, lint_name_only, tool_name, crate_attrs) {
             CheckLintNameResult::Ok(_) => None,
             CheckLintNameResult::Warning(ref msg, _) => Some(sess.struct_warn(msg)),
@@ -758,6 +767,10 @@ pub trait LintContext: Sized {
                         Applicability::MachineApplicable
                     );
                 }
+                BuiltinLintDiagnostics::NamedAsmLabel(help) => {
+                    db.help(&help);
+                    db.note("see the asm section of the unstable book <https://doc.rust-lang.org/nightly/unstable-book/library-features/asm.html#labels> for more information");
+                }
             }
             // Rewrap `db`, and pass control to the user.
             decorate(LintDiagnosticBuilder::new(db));
@@ -1046,7 +1059,28 @@ impl<'tcx> LateContext<'tcx> {
     }
 }
 
-impl<'tcx> LayoutOf for LateContext<'tcx> {
+impl<'tcx> abi::HasDataLayout for LateContext<'tcx> {
+    #[inline]
+    fn data_layout(&self) -> &abi::TargetDataLayout {
+        &self.tcx.data_layout
+    }
+}
+
+impl<'tcx> ty::layout::HasTyCtxt<'tcx> for LateContext<'tcx> {
+    #[inline]
+    fn tcx(&self) -> TyCtxt<'tcx> {
+        self.tcx
+    }
+}
+
+impl<'tcx> ty::layout::HasParamEnv<'tcx> for LateContext<'tcx> {
+    #[inline]
+    fn param_env(&self) -> ty::ParamEnv<'tcx> {
+        self.param_env
+    }
+}
+
+impl<'tcx> LayoutOf<'tcx> for LateContext<'tcx> {
     type Ty = Ty<'tcx>;
     type TyAndLayout = Result<TyAndLayout<'tcx>, LayoutError<'tcx>>;
 

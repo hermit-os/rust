@@ -506,8 +506,7 @@ impl<'a> Resolver<'a> {
 
                 if self.session.is_nightly_build() {
                     err.help(
-                        "use `#![feature(const_generics)]` and `#![feature(const_evaluatable_checked)]` \
-                        to allow generic const expressions"
+                        "use `#![feature(generic_const_exprs)]` to allow generic const expressions",
                     );
                 }
 
@@ -950,17 +949,67 @@ impl<'a> Resolver<'a> {
         self.add_typo_suggestion(err, suggestion, ident.span);
 
         let import_suggestions =
-            self.lookup_import_candidates(ident, Namespace::MacroNS, parent_scope, |res| {
-                matches!(res, Res::Def(DefKind::Macro(MacroKind::Bang), _))
-            });
+            self.lookup_import_candidates(ident, Namespace::MacroNS, parent_scope, is_expected);
         show_candidates(err, None, &import_suggestions, false, true);
 
         if macro_kind == MacroKind::Derive && (ident.name == sym::Send || ident.name == sym::Sync) {
             let msg = format!("unsafe traits like `{}` should be implemented explicitly", ident);
             err.span_note(ident.span, &msg);
+            return;
         }
         if self.macro_names.contains(&ident.normalize_to_macros_2_0()) {
             err.help("have you added the `#[macro_use]` on the module/import?");
+            return;
+        }
+        for ns in [Namespace::MacroNS, Namespace::TypeNS, Namespace::ValueNS] {
+            if let Ok(binding) = self.early_resolve_ident_in_lexical_scope(
+                ident,
+                ScopeSet::All(ns, false),
+                &parent_scope,
+                false,
+                false,
+                ident.span,
+            ) {
+                let desc = match binding.res() {
+                    Res::Def(DefKind::Macro(MacroKind::Bang), _) => {
+                        "a function-like macro".to_string()
+                    }
+                    Res::Def(DefKind::Macro(MacroKind::Attr), _) | Res::NonMacroAttr(..) => {
+                        format!("an attribute: `#[{}]`", ident)
+                    }
+                    Res::Def(DefKind::Macro(MacroKind::Derive), _) => {
+                        format!("a derive macro: `#[derive({})]`", ident)
+                    }
+                    Res::ToolMod => {
+                        // Don't confuse the user with tool modules.
+                        continue;
+                    }
+                    Res::Def(DefKind::Trait, _) if macro_kind == MacroKind::Derive => {
+                        "only a trait, without a derive macro".to_string()
+                    }
+                    res => format!(
+                        "{} {}, not {} {}",
+                        res.article(),
+                        res.descr(),
+                        macro_kind.article(),
+                        macro_kind.descr_expected(),
+                    ),
+                };
+                if let crate::NameBindingKind::Import { import, .. } = binding.kind {
+                    if !import.span.is_dummy() {
+                        err.span_note(
+                            import.span,
+                            &format!("`{}` is imported here, but it is {}", ident, desc),
+                        );
+                        // Silence the 'unused import' warning we might get,
+                        // since this diagnostic already covers that import.
+                        self.record_use(ident, binding, false);
+                        return;
+                    }
+                }
+                err.note(&format!("`{}` is in scope, but it is {}", ident, desc));
+                return;
+            }
         }
     }
 

@@ -21,6 +21,7 @@ use rustc_feature::UnstableFeatures;
 use rustc_span::edition::{Edition, DEFAULT_EDITION, EDITION_NAME_LIST, LATEST_STABLE_EDITION};
 use rustc_span::source_map::{FileName, FilePathMapping};
 use rustc_span::symbol::{sym, Symbol};
+use rustc_span::RealFileName;
 use rustc_span::SourceFileHashAlgorithm;
 
 use rustc_errors::emitter::HumanReadableErrorType;
@@ -707,6 +708,7 @@ impl Default for Options {
             json_artifact_notifications: false,
             json_unused_externs: false,
             pretty: None,
+            working_dir: RealFileName::LocalPath(std::env::current_dir().unwrap()),
         }
     }
 }
@@ -1087,10 +1089,11 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
         ),
         opt::flag_s("", "test", "Build a test harness"),
         opt::opt_s("", "target", "Target triple for which the code is compiled", "TARGET"),
-        opt::multi_s("W", "warn", "Set lint warnings", "OPT"),
-        opt::multi_s("A", "allow", "Set lint allowed", "OPT"),
-        opt::multi_s("D", "deny", "Set lint denied", "OPT"),
-        opt::multi_s("F", "forbid", "Set lint forbidden", "OPT"),
+        opt::multi_s("A", "allow", "Set lint allowed", "LINT"),
+        opt::multi_s("W", "warn", "Set lint warnings", "LINT"),
+        opt::multi_s("", "force-warn", "Set lint force-warn", "LINT"),
+        opt::multi_s("D", "deny", "Set lint denied", "LINT"),
+        opt::multi_s("F", "forbid", "Set lint forbidden", "LINT"),
         opt::multi_s(
             "",
             "cap-lints",
@@ -1098,13 +1101,6 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
              More restrictive lints are capped at this \
              level",
             "LEVEL",
-        ),
-        opt::multi_s(
-            "",
-            "force-warn",
-            "Specifiy lints that should warn even if \
-             they are allowed somewhere else",
-            "LINT",
         ),
         opt::multi_s("C", "codegen", "Set a codegen option", "OPT[=VALUE]"),
         opt::flag_s("V", "version", "Print version info and exit"),
@@ -1161,18 +1157,9 @@ pub fn rustc_optgroups() -> Vec<RustcOptGroup> {
 pub fn get_cmd_lint_options(
     matches: &getopts::Matches,
     error_format: ErrorOutputType,
-    debugging_opts: &DebuggingOptions,
 ) -> (Vec<(String, lint::Level)>, bool, Option<lint::Level>) {
     let mut lint_opts_with_position = vec![];
     let mut describe_lints = false;
-
-    if !debugging_opts.unstable_options && matches.opt_present("force-warn") {
-        early_error(
-            error_format,
-            "the `-Z unstable-options` flag must also be passed to enable \
-            the flag `--force-warn=lints`",
-        );
-    }
 
     for level in [lint::Allow, lint::Warn, lint::ForceWarn, lint::Deny, lint::Forbid] {
         for (arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
@@ -1963,8 +1950,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         .unwrap_or_else(|e| early_error(error_format, &e[..]));
 
     let mut debugging_opts = DebuggingOptions::build(matches, error_format);
-    let (lint_opts, describe_lints, lint_cap) =
-        get_cmd_lint_options(matches, error_format, &debugging_opts);
+    let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
 
     check_debug_option_stability(&debugging_opts, error_format, json_rendered);
 
@@ -2132,6 +2118,18 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         if candidate.join("library/std/src/lib.rs").is_file() { Some(candidate) } else { None }
     };
 
+    let working_dir = std::env::current_dir().unwrap_or_else(|e| {
+        early_error(error_format, &format!("Current directory is invalid: {}", e));
+    });
+
+    let (path, remapped) =
+        FilePathMapping::new(remap_path_prefix.clone()).map_prefix(working_dir.clone());
+    let working_dir = if remapped {
+        RealFileName::Remapped { local_path: Some(working_dir), virtual_name: path }
+    } else {
+        RealFileName::LocalPath(path)
+    };
+
     Options {
         crate_types,
         optimize: opt_level,
@@ -2167,6 +2165,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         json_artifact_notifications,
         json_unused_externs,
         pretty,
+        working_dir,
     }
 }
 
@@ -2413,6 +2412,7 @@ crate mod dep_tracking {
     use crate::utils::{NativeLib, NativeLibKind};
     use rustc_feature::UnstableFeatures;
     use rustc_span::edition::Edition;
+    use rustc_span::RealFileName;
     use rustc_target::spec::{CodeModel, MergeFunctions, PanicStrategy, RelocModel};
     use rustc_target::spec::{RelroLevel, SanitizerSet, SplitDebuginfo, TargetTriple, TlsModel};
     use std::collections::hash_map::DefaultHasher;
@@ -2494,6 +2494,7 @@ crate mod dep_tracking {
         TrimmedDefPaths,
         Option<LdImpl>,
         OutputType,
+        RealFileName,
     );
 
     impl<T1, T2> DepTrackingHash for (T1, T2)

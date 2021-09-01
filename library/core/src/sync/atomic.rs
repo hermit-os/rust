@@ -113,6 +113,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 #![cfg_attr(not(target_has_atomic_load_store = "8"), allow(dead_code))]
 #![cfg_attr(not(target_has_atomic_load_store = "8"), allow(unused_imports))]
+#![rustc_diagnostic_item = "atomic_mod"]
 
 use self::Ordering::*;
 
@@ -137,7 +138,8 @@ pub struct AtomicBool {
 
 #[cfg(target_has_atomic_load_store = "8")]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Default for AtomicBool {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl const Default for AtomicBool {
     /// Creates an `AtomicBool` initialized to `false`.
     #[inline]
     fn default() -> Self {
@@ -167,7 +169,8 @@ pub struct AtomicPtr<T> {
 
 #[cfg(target_has_atomic_load_store = "ptr")]
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<T> Default for AtomicPtr<T> {
+#[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+impl<T> const Default for AtomicPtr<T> {
     /// Creates a null `AtomicPtr<T>`.
     fn default() -> AtomicPtr<T> {
         AtomicPtr::new(crate::ptr::null_mut())
@@ -198,6 +201,7 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[non_exhaustive]
+#[rustc_diagnostic_item = "Ordering"]
 pub enum Ordering {
     /// No ordering constraints, only atomic operations.
     ///
@@ -1349,7 +1353,8 @@ macro_rules! atomic_int {
         pub const $atomic_init: $atomic_type = $atomic_type::new(0);
 
         #[$stable]
-        impl Default for $atomic_type {
+        #[rustc_const_unstable(feature = "const_default_impls", issue = "87864")]
+        impl const Default for $atomic_type {
             #[inline]
             fn default() -> Self {
                 Self::new(Default::default())
@@ -2664,6 +2669,7 @@ unsafe fn atomic_umin<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 /// ```
 #[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
+#[rustc_diagnostic_item = "fence"]
 pub fn fence(order: Ordering) {
     // SAFETY: using an atomic fence is safe.
     unsafe {
@@ -2745,6 +2751,7 @@ pub fn fence(order: Ordering) {
 /// [memory barriers]: https://www.kernel.org/doc/Documentation/memory-barriers.txt
 #[inline]
 #[stable(feature = "compiler_fences", since = "1.21.0")]
+#[rustc_diagnostic_item = "compiler_fence"]
 pub fn compiler_fence(order: Ordering) {
     // SAFETY: using an atomic fence is safe.
     unsafe {

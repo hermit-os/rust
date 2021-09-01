@@ -277,7 +277,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 
                 let bound_predicate = obligation.predicate.kind();
                 match bound_predicate.skip_binder() {
-                    ty::PredicateKind::Trait(trait_predicate, _) => {
+                    ty::PredicateKind::Trait(trait_predicate) => {
                         let trait_predicate = bound_predicate.rebind(trait_predicate);
                         let trait_predicate = self.resolve_vars_if_possible(trait_predicate);
 
@@ -518,8 +518,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                                 );
                                 trait_pred
                             });
-                            let unit_obligation =
-                                obligation.with(predicate.without_const().to_predicate(tcx));
+                            let unit_obligation = obligation.with(predicate.to_predicate(tcx));
                             if self.predicate_may_hold(&unit_obligation) {
                                 err.note("this trait is implemented for `()`.");
                                 err.note(
@@ -564,6 +563,13 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                         // `FulfillmentErrorCode::CodeSubtypeError`,
                         // not selection error.
                         span_bug!(span, "subtype requirement gave wrong error: `{:?}`", predicate)
+                    }
+
+                    ty::PredicateKind::Coerce(predicate) => {
+                        // Errors for Coerce predicates show up as
+                        // `FulfillmentErrorCode::CodeSubtypeError`,
+                        // not selection error.
+                        span_bug!(span, "coerce requirement gave wrong error: `{:?}`", predicate)
                     }
 
                     ty::PredicateKind::RegionOutlives(predicate) => {
@@ -788,7 +794,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 )
             }
             SelectionError::NotConstEvaluatable(NotConstEvaluatable::MentionsParam) => {
-                if !self.tcx.features().const_evaluatable_checked {
+                if !self.tcx.features().generic_const_exprs {
                     let mut err = self.tcx.sess.struct_span_err(
                         span,
                         "constant expression depends on a generic parameter",
@@ -797,7 +803,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     // issue. However, this is currently not actually possible
                     // (see https://github.com/rust-lang/rust/issues/66962#issuecomment-575907083).
                     //
-                    // Note that with `feature(const_evaluatable_checked)` this case should not
+                    // Note that with `feature(generic_const_exprs)` this case should not
                     // be reachable.
                     err.note("this may fail depending on what value the parameter takes");
                     err.emit();
@@ -805,10 +811,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 }
 
                 match obligation.predicate.kind().skip_binder() {
-                    ty::PredicateKind::ConstEvaluatable(def, _) => {
+                    ty::PredicateKind::ConstEvaluatable(uv) => {
                         let mut err =
                             self.tcx.sess.struct_span_err(span, "unconstrained generic constant");
-                        let const_span = self.tcx.def_span(def.did);
+                        let const_span = self.tcx.def_span(uv.def.did);
                         match self.tcx.sess.source_map().span_to_snippet(const_span) {
                             Ok(snippet) => err.help(&format!(
                                 "try adding a `where` bound using this expression: `where [(); {}]:`",
@@ -1148,7 +1154,7 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
         // FIXME: It should be possible to deal with `ForAll` in a cleaner way.
         let bound_error = error.kind();
         let (cond, error) = match (cond.kind().skip_binder(), bound_error.skip_binder()) {
-            (ty::PredicateKind::Trait(..), ty::PredicateKind::Trait(error, _)) => {
+            (ty::PredicateKind::Trait(..), ty::PredicateKind::Trait(error)) => {
                 (cond, bound_error.rebind(error))
             }
             _ => {
@@ -1159,7 +1165,7 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
 
         for obligation in super::elaborate_predicates(self.tcx, std::iter::once(cond)) {
             let bound_predicate = obligation.predicate.kind();
-            if let ty::PredicateKind::Trait(implication, _) = bound_predicate.skip_binder() {
+            if let ty::PredicateKind::Trait(implication) = bound_predicate.skip_binder() {
                 let error = error.to_poly_trait_ref();
                 let implication = bound_predicate.rebind(implication.trait_ref);
                 // FIXME: I'm just not taking associated types at all here.
@@ -1536,7 +1542,7 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
 
         let bound_predicate = predicate.kind();
         let mut err = match bound_predicate.skip_binder() {
-            ty::PredicateKind::Trait(data, _) => {
+            ty::PredicateKind::Trait(data) => {
                 let trait_ref = bound_predicate.rebind(data.trait_ref);
                 debug!("trait_ref {:?}", trait_ref);
 
@@ -1803,7 +1809,7 @@ impl<'a, 'tcx> InferCtxtPrivExt<'tcx> for InferCtxt<'a, 'tcx> {
             match (obligation.predicate.kind().skip_binder(), obligation.cause.code.peel_derives())
             {
                 (
-                    ty::PredicateKind::Trait(pred, _),
+                    ty::PredicateKind::Trait(pred),
                     &ObligationCauseCode::BindingObligation(item_def_id, span),
                 ) => (pred, item_def_id, span),
                 _ => return,
@@ -2003,7 +2009,7 @@ pub enum ArgKind {
     Arg(String, String),
 
     /// An argument of tuple type. For a "found" argument, the span is
-    /// the location in the source of the pattern. For a "expected"
+    /// the location in the source of the pattern. For an "expected"
     /// argument, it will be None. The vector is a list of (name, ty)
     /// strings for the components of the tuple.
     Tuple(Option<Span>, Vec<(String, String)>),

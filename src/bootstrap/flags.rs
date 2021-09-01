@@ -71,6 +71,13 @@ pub struct Flags {
 
     pub rust_profile_use: Option<String>,
     pub rust_profile_generate: Option<String>,
+
+    pub llvm_profile_use: Option<String>,
+    // LLVM doesn't support a custom location for generating profile
+    // information.
+    //
+    // llvm_out/build/profiles/ is the location this writes to.
+    pub llvm_profile_generate: bool,
 }
 
 pub enum Subcommand {
@@ -78,9 +85,6 @@ pub enum Subcommand {
         paths: Vec<PathBuf>,
     },
     Check {
-        // Whether to run checking over all targets (e.g., unit / integration
-        // tests).
-        all_targets: bool,
         paths: Vec<PathBuf>,
     },
     Clippy {
@@ -225,8 +229,15 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`",
              VALUE overrides the skip-rebuild option in config.toml.",
             "VALUE",
         );
-        opts.optopt("", "rust-profile-generate", "generate PGO profile with rustc build", "FORMAT");
-        opts.optopt("", "rust-profile-use", "use PGO profile for rustc build", "FORMAT");
+        opts.optopt(
+            "",
+            "rust-profile-generate",
+            "generate PGO profile with rustc build",
+            "PROFILE",
+        );
+        opts.optopt("", "rust-profile-use", "use PGO profile for rustc build", "PROFILE");
+        opts.optflag("", "llvm-profile-generate", "generate PGO profile with llvm built for rustc");
+        opts.optopt("", "llvm-profile-use", "use PGO profile for llvm build", "PROFILE");
 
         // We can't use getopt to parse the options until we have completed specifying which
         // options are valid, but under the current implementation, some options are conditional on
@@ -553,7 +564,12 @@ Arguments:
         let cmd = match subcommand.as_str() {
             "build" | "b" => Subcommand::Build { paths },
             "check" | "c" => {
-                Subcommand::Check { paths, all_targets: matches.opt_present("all-targets") }
+                if matches.opt_present("all-targets") {
+                    eprintln!(
+                        "Warning: --all-targets is now on by default and does not need to be passed explicitly."
+                    );
+                }
+                Subcommand::Check { paths }
             }
             "clippy" => Subcommand::Clippy { paths, fix: matches.opt_present("fix") },
             "fix" => Subcommand::Fix { paths },
@@ -685,6 +701,8 @@ Arguments:
                 .expect("`color` should be `always`, `never`, or `auto`"),
             rust_profile_use: matches.opt_str("rust-profile-use"),
             rust_profile_generate: matches.opt_str("rust-profile-generate"),
+            llvm_profile_use: matches.opt_str("llvm-profile-use"),
+            llvm_profile_generate: matches.opt_present("llvm-profile-generate"),
         }
     }
 }

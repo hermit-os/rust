@@ -11,7 +11,6 @@ Rust MIR: a lowered representation of Rust.
 #![cfg_attr(bootstrap, feature(bindings_after_at))]
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
-#![feature(box_syntax)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
 #![feature(exact_size_is_empty)]
@@ -46,6 +45,9 @@ pub mod monomorphize;
 mod shim;
 pub mod transform;
 pub mod util;
+
+// A public API provided for the Rust compiler consumers.
+pub use self::borrow_check::consumers;
 
 use rustc_middle::ty::query::Providers;
 
