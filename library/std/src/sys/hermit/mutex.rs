@@ -151,13 +151,18 @@ impl PriorityQueue {
 }
 
 struct MutexInner {
-    locked: bool,
+    pid: abi::Tid,
+    prio: abi::Priority,
     blocked_task: PriorityQueue,
 }
 
 impl MutexInner {
     pub const fn new() -> MutexInner {
-        MutexInner { locked: false, blocked_task: PriorityQueue::new() }
+        MutexInner {
+            pid: 0,
+            prio: abi::LOW_PRIO,
+            blocked_task: PriorityQueue::new(),
+        }
     }
 }
 
@@ -184,12 +189,17 @@ impl Mutex {
     pub unsafe fn lock(&self) {
         loop {
             let mut guard = self.inner.lock();
-            if guard.locked == false {
-                guard.locked = true;
+            if guard.pid == 0 {
+                guard.pid = abi::getpid();
+                guard.prio = abi::get_priority();
                 return;
             } else {
                 let prio = abi::get_priority();
                 let id = abi::getpid();
+
+                if prio > guard.prio {
+                    abi::set_priority(guard.pid, prio);
+                }
 
                 guard.blocked_task.push(prio, id);
                 abi::block_current_task();
@@ -202,19 +212,40 @@ impl Mutex {
     #[inline]
     pub unsafe fn unlock(&self) {
         let mut guard = self.inner.lock();
-        guard.locked = false;
+        let prio = guard.prio;
+        guard.pid = 0;
+        guard.prio = abi::LOW_PRIO;
         if let Some(tid) = guard.blocked_task.pop() {
             abi::wakeup_task(tid);
         }
+
+        drop(guard);
+        abi::set_current_task_priority(prio);
+        abi::yield_now();
     }
 
     #[inline]
     pub unsafe fn try_lock(&self) -> bool {
         let mut guard = self.inner.lock();
-        if guard.locked == false {
-            guard.locked = true;
-        }
-        guard.locked
+        let ret = if guard.pid == 0 {
+            guard.pid = abi::getpid();
+            guard.prio = abi::get_priority();
+
+            true
+        } else {
+            let prio = abi::get_priority();
+
+            if prio > guard.prio {
+                abi::set_priority(guard.pid, prio);
+            }
+
+            drop(guard);
+            abi::yield_now();
+
+            false
+        };
+
+        ret
     }
 
     #[inline]
