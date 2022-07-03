@@ -56,6 +56,7 @@ pub mod locks {
 }
 
 use crate::io::ErrorKind;
+use hermit_abi::NetworkError;
 
 #[allow(unused_extern_crates)]
 pub extern crate hermit_abi as abi;
@@ -153,4 +154,16 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
 
 pub fn cvt(result: i32) -> crate::io::Result<usize> {
     if result < 0 { Err(crate::io::Error::from_raw_os_error(-result)) } else { Ok(result as usize) }
+}
+
+pub fn from_network_error(err: NetworkError) -> ErrorKind {
+    match err {
+        NetworkError::WouldBlock => ErrorKind::WouldBlock,
+        NetworkError::TimedOut => ErrorKind::TimedOut,
+        NetworkError::NotConnected => ErrorKind::NotConnected,
+        NetworkError::Unsupported => ErrorKind::Unsupported,
+        NetworkError::InvalidInput => ErrorKind::InvalidInput,
+        NetworkError::Other => ErrorKind::Other,
+        _ => ErrorKind::Uncategorized,
+    }
 }
