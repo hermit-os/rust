@@ -163,6 +163,7 @@ pub fn from_network_error(err: NetworkError) -> ErrorKind {
         NetworkError::NotConnected => ErrorKind::NotConnected,
         NetworkError::Unsupported => ErrorKind::Unsupported,
         NetworkError::InvalidInput => ErrorKind::InvalidInput,
+        NetworkError::InvalidSocket => ErrorKind::InvalidInput,
         NetworkError::Other => ErrorKind::Other,
         _ => ErrorKind::Uncategorized,
     }
