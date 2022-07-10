@@ -1,6 +1,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 pub mod ffi;
+pub mod io;
 
 /// A prelude for conveniently writing platform-specific code.
 ///
@@ -10,4 +11,6 @@ pub mod prelude {
     #[doc(no_inline)]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub use super::ffi::{OsStrExt, OsStringExt};
+    #[stable(feature = "rust1", since = "1.0.0")]
+    pub use super::io::{AsRawSocket, FromRawSocket, IntoRawSocket};
 }
