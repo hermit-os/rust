@@ -1,5 +1,7 @@
 #![unstable(reason = "not public", issue = "none", feature = "fd")]
 
+mod raw;
+
 use crate::io::{self, Read};
 use crate::mem;
 use crate::sys::cvt;
@@ -7,30 +9,32 @@ use crate::sys::hermit::abi;
 use crate::sys::unsupported;
 use crate::sys_common::AsInner;
 
-#[derive(Debug)]
+pub use self::raw::*;
+
+#[derive(Debug, Clone)]
 pub struct FileDesc {
-    fd: i32,
+    fd: RawFd,
 }
 
 impl FileDesc {
-    pub fn new(fd: i32) -> FileDesc {
+    pub fn new(fd: RawFd) -> FileDesc {
         FileDesc { fd }
     }
 
-    pub fn raw(&self) -> i32 {
+    pub fn raw(&self) -> RawFd {
         self.fd
     }
 
     /// Extracts the actual file descriptor without closing it.
-    pub fn into_raw(self) -> i32 {
+    pub fn into_raw(self) -> RawFd {
         let fd = self.fd;
         mem::forget(self);
         fd
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let result = unsafe { abi::read(self.fd, buf.as_mut_ptr(), buf.len()) };
-        cvt(result as i32)
+        let result = cvt(unsafe { abi::read(self.fd, buf.as_mut_ptr(), buf.len()) })?;
+        Ok(result as usize)
     }
 
     pub fn read_to_end(&self, buf: &mut Vec<u8>) -> io::Result<usize> {
@@ -39,8 +43,8 @@ impl FileDesc {
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        let result = unsafe { abi::write(self.fd, buf.as_ptr(), buf.len()) };
-        cvt(result as i32)
+        let result = cvt(unsafe { abi::write(self.fd, buf.as_ptr(), buf.len()) })?;
+        Ok(result as usize)
     }
 
     pub fn duplicate(&self) -> io::Result<FileDesc> {
@@ -61,6 +65,10 @@ impl FileDesc {
     pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
         unsupported()
     }
+
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
 }
 
 impl<'a> Read for &'a FileDesc {
@@ -70,7 +78,7 @@ impl<'a> Read for &'a FileDesc {
 }
 
 impl AsInner<i32> for FileDesc {
-    fn as_inner(&self) -> &i32 {
+    fn as_inner(&self) -> &RawFd {
         &self.fd
     }
 }
