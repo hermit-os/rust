@@ -2,10 +2,11 @@
 
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::net::{Shutdown, SocketAddr};
-use crate::sys::fd::{RawFd, FileDesc, AsRawFd};
+use crate::sys::fd::{AsRawFd, FileDesc, RawFd};
+use crate::sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
+use crate::sys_common::AsInner;
 use crate::sys_common::FromInner;
 use crate::sys_common::IntoInner;
-use crate::sys_common::AsInner;
 use crate::time::Duration;
 
 #[allow(unused_extern_crates)]
@@ -61,34 +62,51 @@ impl Socket {
         unimplemented!()
     }
 
-    pub fn accept(&self, storage: *mut netc::sockaddr, len: *mut netc::socklen_t) -> io::Result<Socket> {
+    pub fn accept(
+        &self,
+        storage: *mut netc::sockaddr,
+        len: *mut netc::socklen_t,
+    ) -> io::Result<Socket> {
         let fd = cvt(unsafe { netc::accept(self.0.as_raw_fd(), storage, len) })?;
         Ok(Socket(FileDesc::new(fd)))
     }
 
     pub fn duplicate(&self) -> io::Result<Socket> {
-        unimplemented!()
+        let fd = cvt(unsafe { netc::dup(self.0.as_raw_fd()) })?;
+        Ok(Socket(FileDesc::new(fd)))
     }
 
     fn recv_with_flags(&self, _buf: &mut [u8], _flags: i32) -> io::Result<usize> {
         unimplemented!()
     }
 
-    pub fn read(&self, _buf: &mut [u8]) -> io::Result<usize> {
-        unimplemented!()
+    pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let sz = cvt(unsafe { netc::read(self.0.as_raw_fd(), buf.as_mut_ptr(), buf.len()) })?;
+        Ok(sz.try_into().unwrap())
     }
 
     pub fn peek(&self, _buf: &mut [u8]) -> io::Result<usize> {
         unimplemented!()
     }
 
-    pub fn read_vectored(&self, _bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        unimplemented!()
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        let mut size: isize = 0;
+
+        for i in bufs.iter_mut() {
+            let ret: isize =
+                cvt(unsafe { netc::read(self.0.as_raw_fd(), i.as_mut_ptr(), i.len()) })?;
+
+            if ret != 0 {
+                size += ret;
+            }
+        }
+
+        Ok(size.try_into().unwrap())
     }
 
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
-        unimplemented!()
+        true
     }
 
     pub fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
@@ -99,48 +117,110 @@ impl Socket {
         unimplemented!()
     }
 
-    pub fn write(&self, _buf: &[u8]) -> io::Result<usize> {
-        unimplemented!()
+    pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
+        let sz = cvt(unsafe { netc::write(self.0.as_raw_fd(), buf.as_ptr(), buf.len()) })?;
+        Ok(sz.try_into().unwrap())
     }
 
-    pub fn write_vectored(&self, _bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        unimplemented!()
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        let mut size: isize = 0;
+
+        for i in bufs.iter() {
+            size += cvt(unsafe { netc::write(self.0.as_raw_fd(), i.as_ptr(), i.len()) })?;
+        }
+
+        Ok(size.try_into().unwrap())
     }
 
     pub fn is_write_vectored(&self) -> bool {
-        unimplemented!()
+        true
     }
 
-    pub fn set_timeout(&self, _dur: Option<Duration>, _kind: i32) -> io::Result<()> {
-        unimplemented!()
+    pub fn set_timeout(&self, dur: Option<Duration>, kind: i32) -> io::Result<()> {
+        let timeout = match dur {
+            Some(dur) => {
+                if dur.as_secs() == 0 && dur.subsec_nanos() == 0 {
+                    return Err(io::const_io_error!(
+                        io::ErrorKind::InvalidInput,
+                        "cannot set a 0 duration timeout",
+                    ));
+                }
+
+                let secs = if dur.as_secs() > netc::time_t::MAX as u64 {
+                    netc::time_t::MAX
+                } else {
+                    dur.as_secs() as netc::time_t
+                };
+                let mut timeout = netc::timeval {
+                    tv_sec: secs,
+                    tv_usec: dur.subsec_micros() as netc::suseconds_t,
+                };
+                if timeout.tv_sec == 0 && timeout.tv_usec == 0 {
+                    timeout.tv_usec = 1;
+                }
+                timeout
+            }
+            None => netc::timeval { tv_sec: 0, tv_usec: 0 },
+        };
+        setsockopt(self, netc::SOL_SOCKET, kind, timeout)
     }
 
-    pub fn timeout(&self, _kind: i32) -> io::Result<Option<Duration>> {
-        unimplemented!()
+    pub fn timeout(&self, kind: i32) -> io::Result<Option<Duration>> {
+        let raw: netc::timeval = getsockopt(self, netc::SOL_SOCKET, kind)?;
+        if raw.tv_sec == 0 && raw.tv_usec == 0 {
+            Ok(None)
+        } else {
+            let sec = raw.tv_sec as u64;
+            let nsec = (raw.tv_usec as u32) * 1000;
+            Ok(Some(Duration::new(sec, nsec)))
+        }
     }
 
-    pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
-        unimplemented!()
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        let how = match how {
+            Shutdown::Write => netc::SHUT_WR,
+            Shutdown::Read => netc::SHUT_RD,
+            Shutdown::Both => netc::SHUT_RDWR,
+        };
+        cvt(unsafe { netc::shutdown_socket(self.as_raw_fd(), how) })?;
+        Ok(())
     }
 
-    pub fn set_linger(&self, _linger: Option<Duration>) -> io::Result<()> {
-        unimplemented!()
+    pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
+        let linger = netc::linger {
+            l_onoff: linger.is_some() as i32,
+            l_linger: linger.unwrap_or_default().as_secs() as libc::c_int,
+        };
+
+        setsockopt(self, netc::SOL_SOCKET, netc::SO_LINGER, linger)
     }
 
     pub fn linger(&self) -> io::Result<Option<Duration>> {
-        unimplemented!()
+        let val: netc::linger = getsockopt(self, netc::SOL_SOCKET, netc::SO_LINGER)?;
+
+        Ok((val.l_onoff != 0).then(|| Duration::from_secs(val.l_linger as u64)))
     }
 
-    pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
-        unimplemented!()
+    pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
+        let value: i32 = if nodelay { 1 } else { 0 };
+        setsockopt(self, netc::IPPROTO_TCP, netc::TCP_NODELAY, value)
     }
 
     pub fn nodelay(&self) -> io::Result<bool> {
-        unimplemented!()
+        let raw: i32 = getsockopt(self, netc::IPPROTO_TCP, netc::TCP_NODELAY)?;
+        Ok(raw != 0)
     }
 
-    pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
-        unimplemented!()
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        let mut nonblocking: i32 = if nonblocking { 1 } else { 0 };
+        cvt(unsafe {
+            netc::ioctl(
+                self.as_raw_fd(),
+                netc::FIONBIO,
+                &mut nonblocking as *mut _ as *mut core::ffi::c_void,
+            )
+        })
+        .map(drop)
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
@@ -159,11 +239,11 @@ impl AsInner<FileDesc> for Socket {
     }
 }
 
-impl IntoInner<FileDesc> for Socket {
+/*impl IntoInner<FileDesc> for Socket {
     fn into_inner(self) -> FileDesc {
         self.0
     }
-}
+}*/
 
 impl FromInner<FileDesc> for Socket {
     fn from_inner(file_desc: FileDesc) -> Self {
