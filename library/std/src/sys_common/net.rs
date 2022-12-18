@@ -414,6 +414,9 @@ impl TcpListener {
                 // it allows up to about 37, but other times it doesn't even
                 // accept 32. There may be a global limitation causing this.
                 let backlog = 20;
+            } else if #[cfg(target_os = "hermit")] {
+                // RustyHermit doesn't supports backlogs
+                let backlog = 1;
             } else {
                 // The default for all other platforms
                 let backlog = 128;
