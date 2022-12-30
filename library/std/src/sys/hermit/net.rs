@@ -2,6 +2,7 @@
 
 use crate::cmp;
 use crate::io::{self, IoSlice, IoSliceMut};
+use crate::mem;
 use crate::net::{Shutdown, SocketAddr};
 use crate::sys::fd::{AsRawFd, FileDesc, RawFd};
 use crate::sys::time::Instant;
@@ -147,12 +148,9 @@ impl Socket {
     }
 
     fn recv_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<usize> {
-        if flags == 0 {
-            let sz = cvt(unsafe { netc::read(self.0.as_raw_fd(), buf.as_mut_ptr(), buf.len()) })?;
-            Ok(sz.try_into().unwrap())
-        } else {
-            unimplemented!()
-        }
+        let ret =
+            cvt(unsafe { netc::recv(self.0.as_raw_fd(), buf.as_mut_ptr(), buf.len(), flags) })?;
+        Ok(ret as usize)
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -183,12 +181,21 @@ impl Socket {
         true
     }
 
-    fn recv_from_with_flags(
-        &self,
-        _buf: &mut [u8],
-        _flags: i32,
-    ) -> io::Result<(usize, SocketAddr)> {
-        unimplemented!()
+    fn recv_from_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<(usize, SocketAddr)> {
+        let mut storage: netc::sockaddr_storage = unsafe { mem::zeroed() };
+        let mut addrlen = mem::size_of_val(&storage) as netc::socklen_t;
+
+        let n = cvt(unsafe {
+            netc::recvfrom(
+                self.as_raw_fd(),
+                buf.as_mut_ptr(),
+                buf.len(),
+                flags,
+                &mut storage as *mut _ as *mut _,
+                &mut addrlen,
+            )
+        })?;
+        Ok((n as usize, sockaddr_to_addr(&storage, addrlen as usize)?))
     }
 
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
