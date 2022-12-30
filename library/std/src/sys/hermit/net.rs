@@ -1,13 +1,17 @@
 #![allow(dead_code)]
 
+use crate::cmp;
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::net::{Shutdown, SocketAddr};
 use crate::sys::fd::{AsRawFd, FileDesc, RawFd};
+use crate::sys::time::Instant;
 use crate::sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
 use crate::sys_common::AsInner;
 use crate::sys_common::FromInner;
 use crate::sys_common::IntoInner;
 use crate::time::Duration;
+
+use core::ffi::c_int;
 
 #[allow(unused_extern_crates)]
 pub extern crate hermit_abi as netc;
@@ -58,8 +62,74 @@ impl Socket {
         unimplemented!()
     }
 
-    pub fn connect_timeout(&self, _addr: &SocketAddr, _timeout: Duration) -> io::Result<()> {
-        unimplemented!()
+    pub fn connect_timeout(&self, addr: &SocketAddr, timeout: Duration) -> io::Result<()> {
+        self.set_nonblocking(true)?;
+        let r = unsafe {
+            let (addr, len) = addr.into_inner();
+            cvt(netc::connect(self.as_raw_fd(), addr.as_ptr(), len))
+        };
+        self.set_nonblocking(false)?;
+
+        match r {
+            Ok(_) => return Ok(()),
+            // there's no ErrorKind for EINPROGRESS :(
+            Err(ref e) if e.raw_os_error() == Some(netc::errno::EINPROGRESS) => {}
+            Err(e) => return Err(e),
+        }
+
+        let mut pollfd = netc::pollfd { fd: self.as_raw_fd(), events: netc::POLLOUT, revents: 0 };
+
+        if timeout.as_secs() == 0 && timeout.subsec_nanos() == 0 {
+            return Err(io::const_io_error!(
+                io::ErrorKind::InvalidInput,
+                "cannot set a 0 duration timeout",
+            ));
+        }
+
+        let start = Instant::now();
+
+        loop {
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                return Err(io::const_io_error!(io::ErrorKind::TimedOut, "connection timed out"));
+            }
+
+            let timeout = timeout - elapsed;
+            let mut timeout = timeout
+                .as_secs()
+                .saturating_mul(1_000)
+                .saturating_add(timeout.subsec_nanos() as u64 / 1_000_000);
+            if timeout == 0 {
+                timeout = 1;
+            }
+
+            let timeout = cmp::min(timeout, c_int::MAX as u64) as c_int;
+
+            match unsafe { netc::poll(&mut pollfd, 1, timeout) } {
+                -1 => {
+                    let err = io::Error::last_os_error();
+                    if err.kind() != io::ErrorKind::Interrupted {
+                        return Err(err);
+                    }
+                }
+                0 => {}
+                _ => {
+                    // linux returns POLLOUT|POLLERR|POLLHUP for refused connections (!), so look
+                    // for POLLHUP rather than read readiness
+                    if pollfd.revents & netc::POLLHUP != 0 {
+                        let e = self.take_error()?.unwrap_or_else(|| {
+                            io::const_io_error!(
+                                io::ErrorKind::Uncategorized,
+                                "no error set after POLLHUP",
+                            )
+                        });
+                        return Err(e);
+                    }
+
+                    return Ok(());
+                }
+            }
+        }
     }
 
     pub fn accept(
@@ -162,6 +232,7 @@ impl Socket {
             }
             None => netc::timeval { tv_sec: 0, tv_usec: 0 },
         };
+
         setsockopt(self, netc::SOL_SOCKET, kind, timeout)
     }
 
