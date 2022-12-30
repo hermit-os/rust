@@ -146,17 +146,21 @@ impl Socket {
         Ok(Socket(FileDesc::new(fd)))
     }
 
-    fn recv_with_flags(&self, _buf: &mut [u8], _flags: i32) -> io::Result<usize> {
-        unimplemented!()
+    fn recv_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<usize> {
+        if flags == 0 {
+            let sz = cvt(unsafe { netc::read(self.0.as_raw_fd(), buf.as_mut_ptr(), buf.len()) })?;
+            Ok(sz.try_into().unwrap())
+        } else {
+            unimplemented!()
+        }
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let sz = cvt(unsafe { netc::read(self.0.as_raw_fd(), buf.as_mut_ptr(), buf.len()) })?;
-        Ok(sz.try_into().unwrap())
+        self.recv_with_flags(buf, 0)
     }
 
-    pub fn peek(&self, _buf: &mut [u8]) -> io::Result<usize> {
-        unimplemented!()
+    pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.recv_with_flags(buf, netc::MSG_PEEK)
     }
 
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
@@ -179,12 +183,20 @@ impl Socket {
         true
     }
 
-    pub fn recv_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+    fn recv_from_with_flags(
+        &self,
+        _buf: &mut [u8],
+        _flags: i32,
+    ) -> io::Result<(usize, SocketAddr)> {
         unimplemented!()
     }
 
-    pub fn peek_from(&self, _buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        unimplemented!()
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.recv_from_with_flags(buf, 0)
+    }
+
+    pub fn peek_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        self.recv_from_with_flags(buf, netc::MSG_PEEK)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
