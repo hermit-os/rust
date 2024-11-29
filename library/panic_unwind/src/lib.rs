@@ -34,9 +34,6 @@ cfg_if::cfg_if! {
     if #[cfg(target_os = "emscripten")] {
         #[path = "emcc.rs"]
         mod imp;
-    } else if #[cfg(target_os = "hermit")] {
-        #[path = "hermit.rs"]
-        mod imp;
     } else if #[cfg(target_os = "l4re")] {
         // L4Re is unix family but does not yet support unwinding.
         #[path = "dummy.rs"]
@@ -45,6 +42,7 @@ cfg_if::cfg_if! {
         all(target_family = "windows", target_env = "gnu"),
         target_os = "psp",
         target_os = "xous",
+        target_os = "hermit",
         target_os = "solid_asp3",
         all(target_family = "unix", not(any(target_os = "espidf", target_os = "rtems", target_os = "nuttx"))),
         all(target_vendor = "fortanix", target_env = "sgx"),

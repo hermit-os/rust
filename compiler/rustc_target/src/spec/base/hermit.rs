@@ -9,7 +9,7 @@ pub(crate) fn opts() -> TargetOptions {
         position_independent_executables: true,
         static_position_independent_executables: true,
         has_thread_local: true,
-        panic_strategy: PanicStrategy::Abort,
+        panic_strategy: PanicStrategy::Unwind,
         ..Default::default()
     }
 }

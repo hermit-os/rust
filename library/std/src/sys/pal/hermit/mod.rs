@@ -73,6 +73,28 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
 // NOTE: this is not guaranteed to run, for example when the program aborts.
 pub unsafe fn cleanup() {}
 
+mod eh_unwinding {
+    pub(crate) struct EhFrameFinder;
+    // pub(crate) static mut EH_FRAME_ADDRESS: usize = 0;
+    extern "C" {
+        static mut EH_FRAME_ADDRESS: usize;
+    }
+    pub(crate) static EH_FRAME_SETTINGS: EhFrameFinder = EhFrameFinder;
+
+    unsafe impl unwind::EhFrameFinder for EhFrameFinder {
+        fn find(&self, _pc: usize) -> Option<unwind::FrameInfo> {
+            if unsafe { EH_FRAME_ADDRESS == 0 } {
+                None
+            } else {
+                Some(unwind::FrameInfo {
+                    text_base: None,
+                    kind: unwind::FrameInfoKind::EhFrame(unsafe { EH_FRAME_ADDRESS }),
+                })
+            }
+        }
+    }
+}
+
 #[cfg(not(test))]
 #[no_mangle]
 pub unsafe extern "C" fn runtime_entry(
@@ -80,6 +102,11 @@ pub unsafe extern "C" fn runtime_entry(
     argv: *const *const c_char,
     env: *const *const c_char,
 ) -> ! {
+    {
+        // unsafe { eh_unwinding::EH_FRAME_ADDRESS = 0x1200000 + 0x4c008 };
+        unwind::set_custom_eh_frame_finder(&eh_unwinding::EH_FRAME_SETTINGS).ok();
+    }
+
     extern "C" {
         fn main(argc: isize, argv: *const *const c_char) -> i32;
     }

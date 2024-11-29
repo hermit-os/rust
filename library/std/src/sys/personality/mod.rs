@@ -29,6 +29,7 @@ cfg_if::cfg_if! {
     } else if #[cfg(any(
         all(target_family = "windows", target_env = "gnu"),
         target_os = "psp",
+        target_os = "hermit",
         target_os = "xous",
         target_os = "solid_asp3",
         all(target_family = "unix", not(target_os = "espidf"), not(target_os = "l4re"), not(target_os = "rtems"), not(target_os = "nuttx")),
@@ -40,7 +41,6 @@ cfg_if::cfg_if! {
         // - os=none ("bare metal" targets)
         // - os=uefi
         // - os=espidf
-        // - os=hermit
         // - nvptx64-nvidia-cuda
         // - arch=avr
     }

@@ -33,7 +33,10 @@ cfg_if::cfg_if! {
     ))] {
         mod libunwind;
         pub use libunwind::*;
-    } else if #[cfg(target_os = "xous")] {
+    } else if #[cfg(any(
+        target_os = "hermit",
+        target_os = "xous",
+    ))] {
         mod unwinding;
         pub use unwinding::*;
     } else if #[cfg(target_family = "wasm")] {
@@ -42,7 +45,6 @@ cfg_if::cfg_if! {
     } else {
         // no unwinder on the system!
         // - os=none ("bare metal" targets)
-        // - os=hermit
         // - os=uefi
         // - os=cuda
         // - nvptx64-nvidia-cuda
