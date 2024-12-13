@@ -65,7 +65,7 @@ impl StdError for JoinPathsError {
 }
 
 pub fn current_exe() -> io::Result<PathBuf> {
-    unsupported()
+    Ok(crate::path::Path::new("qemu").to_path_buf())
 }
 
 static ENV: Mutex<Option<HashMap<OsString, OsString>>> = Mutex::new(None);
